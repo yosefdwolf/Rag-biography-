@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from openai import OpenAI
 
@@ -25,16 +27,24 @@ def embed(texts: list[str]) -> np.ndarray:
     return arr
 
 
-def chat(system: str, user: str, json_mode: bool = False) -> str:
+def chat(system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
+    """Returns the reply and {tokens_in, tokens_out, latency_ms} for the log."""
     kwargs = {}
     # Reasoning models (o-series, gpt-5) reject a temperature setting.
     if not CHAT_MODEL.startswith(("o", "gpt-5")):
         kwargs["temperature"] = 0
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    started = time.monotonic()
     resp = client().chat.completions.create(
         model=CHAT_MODEL,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         **kwargs,
     )
-    return resp.choices[0].message.content or ""
+    usage = getattr(resp, "usage", None)
+    meta = {
+        "tokens_in": getattr(usage, "prompt_tokens", None),
+        "tokens_out": getattr(usage, "completion_tokens", None),
+        "latency_ms": int((time.monotonic() - started) * 1000),
+    }
+    return resp.choices[0].message.content or "", meta

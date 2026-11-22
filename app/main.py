@@ -3,13 +3,13 @@ import json
 from pathlib import Path
 
 import numpy as np
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select
 
-from . import llm, rag
+from . import llm, rag, report
 from .config import APP_PASSWORD, CHAT_MODEL, EMBED_MODEL, MIN_SIMILARITY, TOP_K
 from .db import chunks, collections, documents, init_db, new_id, now, query_logs, runs, engine
 from .ingest import chunk_text, extract_text
@@ -39,6 +39,20 @@ def check_pw(x_app_password: str | None = Header(default=None)):
         raise HTTPException(status, {"reason": reason, "message": message})
 
 
+OPEN_API = {"/api/config", "/api/unlock"}
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    """Every /api route except config and unlock needs the password, reads included (logs hold prompts)."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in OPEN_API:
+        if problem := password_problem(request.headers.get("x-app-password")):
+            status, reason, message = problem
+            return JSONResponse({"detail": {"reason": reason, "message": message}}, status_code=status)
+    return await call_next(request)
+
+
 @app.post("/api/unlock", status_code=204, dependencies=[Depends(check_pw)])
 def unlock():
     """Checks the password on its own, so the page can open the rest of the app."""
@@ -48,6 +62,11 @@ def unlock():
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/admin")
+def admin_page():
+    return FileResponse(STATIC / "admin.html")
 
 
 @app.get("/api/config")
@@ -69,11 +88,16 @@ class NewCollection(BaseModel):
 def list_collections():
     with engine.connect() as c:
         rows = c.execute(select(collections).order_by(collections.c.created_at.desc())).mappings().all()
-        out = []
-        for r in rows:
-            n = c.execute(select(func.count()).select_from(chunks).where(chunks.c.collection_id == r["id"])).scalar()
-            out.append({**r, "n_chunks": n})
-    return out
+        docs = c.execute(select(documents.c.collection_id, func.count(), func.sum(documents.c.n_words), func.sum(documents.c.n_chunks))
+                         .group_by(documents.c.collection_id)).all()
+        rs = c.execute(select(runs.c.collection_id, func.count(), func.max(runs.c.created_at)).group_by(runs.c.collection_id)).all()
+    d = {r[0]: r[1:] for r in docs}
+    ru = {r[0]: r[1:] for r in rs}
+    return [{
+        **r, "n_docs": d.get(r["id"], (0,))[0], "n_words": (d.get(r["id"], (0, 0))[1] or 0),
+        "n_chunks": (d.get(r["id"], (0, 0, 0))[2] or 0), "n_runs": ru.get(r["id"], (0,))[0],
+        "last_run_at": ru.get(r["id"], (0, None))[1],
+    } for r in rows]
 
 
 @app.post("/api/collections", dependencies=[Depends(check_pw)])
@@ -176,18 +200,72 @@ def get_run(run_id: str):
             "answers": sorted(answers, key=lambda a: a["qnum"])}
 
 
-@app.get("/api/runs/{run_id}/logs.json")
-def download_logs(run_id: str):
-    with engine.connect() as c:
-        r = c.execute(select(runs).where(runs.c.id == run_id)).mappings().first()
-    if not r:
+def _report(run_id: str) -> dict:
+    rep = report.build(run_id)
+    if rep is None:
         raise HTTPException(404, "No such run")
-    body = {
-        "run": {k: v for k, v in r.items() if k != "audit"},
-        "audit": json.loads(r["audit"]) if r["audit"] else None,
-        "log": [{**l, "retrieved": json.loads(l["retrieved"] or "[]")} for l in _logs(run_id)],
-    }
-    return JSONResponse(body, headers={"Content-Disposition": f'attachment; filename="run-{run_id}-logs.json"'})
+    return rep
+
+
+def _filename(rep: dict, ext: str) -> str:
+    slug = "-".join(rep["run"]["person"].lower().split()) or "person"
+    return f"{slug}-run-{rep['run']['id']}.{ext}"
+
+
+@app.get("/api/runs/{run_id}/report")
+def run_report(run_id: str):
+    return _report(run_id)
+
+
+@app.get("/api/runs/{run_id}/report.json")
+def run_report_json(run_id: str):
+    rep = _report(run_id)
+    return Response(json.dumps(rep, indent=2, ensure_ascii=False), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{_filename(rep, "json")}"'})
+
+
+@app.get("/api/runs/{run_id}/report.md")
+def run_report_md(run_id: str):
+    rep = _report(run_id)
+    return PlainTextResponse(report.to_markdown(rep), media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{_filename(rep, "md")}"'})
+
+
+# ---------- admin ----------
+
+@app.get("/api/admin/runs")
+def admin_runs():
+    with engine.connect() as c:
+        rs = c.execute(select(runs).order_by(runs.c.created_at.desc())).mappings().all()
+        counts = {}
+        for row in c.execute(select(query_logs.c.run_id, query_logs.c.response).where(query_logs.c.kind == "query")).all():
+            n = counts.setdefault(row.run_id, [0, 0])
+            n[0] += 1
+            n[1] += row.response != rag.NOT_FOUND
+    out = []
+    for r in rs:
+        audit = json.loads(r["audit"]) if r["audit"] else None
+        logged, answered = counts.get(r["id"], [0, 0])
+        out.append({
+            "id": r["id"], "person": r["person"], "collection_id": r["collection_id"], "status": r["status"],
+            "started_at": r["created_at"], "finished_at": r["finished_at"], "queries_logged": logged,
+            "answered": answered, "sentences": audit["total"] if audit else None,
+            "flagged": audit["flagged"] if audit else None,
+        })
+    return out
+
+
+@app.get("/api/admin/canary")
+def admin_canary():
+    with engine.connect() as c:
+        rows = c.execute(
+            select(query_logs, collections.c.person)
+            .join(collections, collections.c.id == query_logs.c.collection_id)
+            .where(query_logs.c.kind == "canary").order_by(query_logs.c.id.desc())
+        ).mappings().all()
+    return [{"id": r["id"], "person": r["person"], "question": r["question"], "answer": r["response"],
+             "retrieved": json.loads(r["retrieved"] or "[]"), "llm_called": r["llm_called"],
+             "asked_at": r["created_at"], "prompt": r["prompt"]} for r in rows]
 
 
 # ---------- canary / free question ----------

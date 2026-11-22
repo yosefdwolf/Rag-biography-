@@ -111,22 +111,52 @@
 
   // ---------- people ----------
 
-  async function loadCols(selectId) {
-    const cols = await api('/api/collections');
+  // The address says what's on screen: #/ is the people list, #/p/<id> is one person.
+  let people = [];
+  const routeId = () => (location.hash.match(/^#\/p\/(\w+)$/) || [])[1];
+
+  async function loadCols() {
+    people = await api('/api/collections');
+    paintPicker();
+    await route();
+  }
+
+  function paintPicker() {
     const sel = $('colSel');
-    sel.innerHTML = cols.map((c) => `<option value="${c.id}">${esc(c.person)}</option>`).join('');
-    sel.hidden = !cols.length;
-    if (!cols.length) { col = null; $('welcome').hidden = false; $('person').hidden = true; return; }
-    const id = selectId || store.get('rag-col') || cols[0].id;
-    sel.value = cols.some((c) => c.id === id) ? id : cols[0].id;
-    await selectCol(sel.value);
+    sel.innerHTML = '<option value="">All people</option>' + people.map((c) => `<option value="${c.id}">${esc(c.person)}</option>`).join('');
+    sel.hidden = !people.length;
+  }
+
+  async function route() {
+    const id = routeId();
+    clearTimeout(pollTimer);
+    if (id && people.some((c) => c.id === id)) return selectCol(id);
+    showHome();
+  }
+  window.addEventListener('hashchange', () => { if (password) route().catch(fail); });
+
+  function showHome() {
+    col = null; run = null;
+    $('colSel').value = '';
+    $('person').hidden = true;
+    $('welcome').hidden = people.length > 0;
+    $('people').hidden = people.length === 0;
+    const ago = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null);
+    $('peopleGrid').innerHTML = people.map((c) => `
+      <a class="person-card" href="#/p/${c.id}">
+        <span class="avatar" aria-hidden="true">${esc(c.person.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase())}</span>
+        <span class="pc-name">${esc(c.person)}</span>
+        <span class="pc-stats">${c.n_docs} doc${c.n_docs === 1 ? '' : 's'} · ~${Math.round(c.n_words / 300).toLocaleString()} pages · ${c.n_chunks.toLocaleString()} chunks</span>
+        <span class="pc-foot">${c.n_runs ? `${c.n_runs} run${c.n_runs === 1 ? '' : 's'} · last ${ago(c.last_run_at)}` : (c.n_chunks ? 'Ready to generate' : 'No sources yet')}</span>
+      </a>`).join('');
   }
 
   async function selectCol(id) {
     clearTimeout(pollTimer);
-    store.set('rag-col', id);
     col = await api(`/api/collections/${id}`);
+    $('colSel').value = id;
     $('welcome').hidden = true;
+    $('people').hidden = true;
     $('person').hidden = false;
     $('personName').textContent = col.person;
     paintStats();
@@ -150,7 +180,7 @@
     $('runBtn').title = col.n_chunks ? '' : 'Upload sources first';
   }
 
-  $('colSel').addEventListener('change', (e) => selectCol(e.target.value).catch(fail));
+  $('colSel').addEventListener('change', (e) => { location.hash = e.target.value ? `#/p/${e.target.value}` : '#/'; });
 
   const dialog = $('personDialog');
   const openPersonDialog = () => { $('personInput').value = ''; dialog.showModal(); $('personInput').focus(); };
@@ -164,7 +194,9 @@
     try {
       const c = await api('/api/collections', json({ person }));
       dialog.close();
-      await loadCols(c.id);
+      people = await api('/api/collections');
+      paintPicker();
+      location.hash = `#/p/${c.id}`;
       setTab('sources');
     } catch (err) { fail(err); }
   });
@@ -271,9 +303,22 @@
     paintStory();
     paintAnswers();
     paintAudit();
-    $('logLink').hidden = !run;
-    if (run) $('logLink').href = `/api/runs/${run.id}/logs.json`;
+    $('logLinks').hidden = !run || run.status === 'running';
   }
+
+  // Downloads go through fetch so the password header is sent.
+  async function download(path) {
+    const res = await fetch(path, { headers: { 'X-App-Password': password } });
+    if (!res.ok) throw new ApiError(res.status, '', 'Download failed.');
+    const name = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'download';
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement('a'), { href: url, download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  document.querySelectorAll('[data-download]').forEach((b) => b.addEventListener('click', () => {
+    if (run) download(`/api/runs/${run.id}/report.${b.dataset.download}`).catch(fail);
+  }));
 
   // ---------- story ----------
 

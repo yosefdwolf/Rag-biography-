@@ -28,6 +28,7 @@
         <select id="colSel"></select>
       </label>
       <button class="btn ghost" id="newPersonBtn" type="button">+ New person</button>
+      <a class="btn ghost" href="/admin">Logs</a>
     </div>
   </div>
 </header>
@@ -65,10 +66,24 @@
     </ol>
   </section>
 
+  <!-- Home: choose who to work on -->
+  <section id="people" hidden>
+    <div class="hero">
+      <div>
+        <p class="eyebrow">People</p>
+        <h1>Whose story?</h1>
+        <p class="muted" style="margin:8px 0 0">Pick a person to see their sources and stories, or add someone new.</p>
+      </div>
+      <div class="hero-actions"><button class="btn primary" type="button" data-new-person>+ Add a person</button></div>
+    </div>
+    <div class="people-grid" id="peopleGrid"></div>
+  </section>
+
   <!-- A person is selected -->
   <section id="person" hidden>
     <div class="hero">
       <div>
+        <a class="back" href="#/">← All people</a>
         <p class="eyebrow">Biography</p>
         <h1 id="personName"></h1>
         <div class="stats" id="stats"></div>
@@ -102,7 +117,10 @@
         <select id="runSel" class="run-select" aria-label="Run"></select>
         <div class="panel-tools">
           <label class="toggle"><input type="checkbox" id="highlight" checked><span>Highlight flagged</span></label>
-          <a class="btn ghost sm" id="logLink" href="#" download hidden>Download logs</a>
+          <span class="dl" id="logLinks" hidden>
+            <button class="btn ghost sm" type="button" data-download="md">Report (.md)</button>
+            <button class="btn ghost sm" type="button" data-download="json">Logs (.json)</button>
+          </span>
         </div>
       </div>
       <article class="story" id="story"></article>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Run Logs · Biography RAG</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='4' width='24' height='24' rx='5' fill='%233f51b5'/%3E%3Cpath d='M10 12h12M10 17h12M10 22h7' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<script>
+  try { if (localStorage.getItem('rag-password')) document.documentElement.classList.add('known-word'); } catch {}
+</script>
+</head>
+<body class="admin">
+
+<header class="topbar">
+  <div class="topbar-inner wide">
+    <a class="brand" href="/admin">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Biography RAG <span class="brand-sub">Logs</span></span>
+    </a>
+    <div class="top-actions">
+      <a class="btn ghost" href="/">Back to app</a>
+    </div>
+  </div>
+</header>
+
+<section id="gate" class="gate">
+  <div class="gate-card">
+    <div class="gate-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></svg>
+    </div>
+    <h1>Enter the password</h1>
+    <p class="muted">The logs hold every prompt and retrieved chunk, so they're password-protected.</p>
+    <form id="gateForm" novalidate>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input type="password" id="password" autocomplete="current-password" required aria-describedby="passwordError">
+      </label>
+      <button class="btn primary block" type="submit" id="unlockBtn">Unlock</button>
+    </form>
+    <p class="error" id="passwordError" role="alert" hidden></p>
+  </div>
+</section>
+
+<div class="admin-shell" id="app" hidden>
+  <aside class="sidebar">
+    <div class="side-head">
+      <label class="field-label" for="personFilter">Runs</label>
+      <select id="personFilter"><option value="">Everyone</option></select>
+    </div>
+    <nav class="run-list" id="runList"></nav>
+    <button class="side-item canary-link" type="button" id="canaryNav">
+      <span class="side-title">Canary log</span>
+      <span class="side-sub" id="canaryNavSub">Every canary question</span>
+    </button>
+  </aside>
+
+  <main class="report" id="report">
+    <div class="empty"><strong>Pick a run</strong>Choose a run on the left to review its logs.</div>
+  </main>
+</div>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div>
+      <p class="eyebrow" id="drawerMeta"></p>
+      <h2 id="drawerTitle"></h2>
+    </div>
+    <button class="icon-btn" type="button" id="drawerClose" aria-label="Close">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/static/admin.js"></script>
+</body>
+</html>

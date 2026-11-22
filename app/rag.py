@@ -7,8 +7,19 @@ import numpy as np
 from sqlalchemy import insert, select, update
 
 from . import llm
-from .config import CHAT_MODEL, MIN_SIMILARITY, TOP_K
-from .db import chunks, dumps, engine, new_id, now, query_logs, runs
+from .config import CHAT_MODEL, CHUNK_OVERLAP, CHUNK_WORDS, EMBED_MODEL, MIN_SIMILARITY, TOP_K
+from .db import chunks, documents, dumps, engine, new_id, now, query_logs, runs
+
+NO_CALL = {"tokens_in": None, "tokens_out": None, "latency_ms": None}
+
+
+def log(collection_id, kind, question, retrieved, prompt, response, meta, llm_called, run_id=None, qnum=None):
+    with engine.begin() as c:
+        c.execute(insert(query_logs).values(
+            run_id=run_id, collection_id=collection_id, kind=kind, qnum=qnum, question=question,
+            retrieved=dumps(retrieved), prompt=prompt, response=response, model=CHAT_MODEL,
+            llm_called=int(llm_called), created_at=now(), **meta,
+        ))
 
 NOT_FOUND = "NOT IN THE SOURCES"
 
@@ -101,24 +112,23 @@ def _snippet_block(hits) -> str:
 
 
 def answer(collection_id: str, person: str, question: str, kind: str, run_id=None, qnum=None) -> dict:
-    hits = retrieve(collection_id, question)
+    # Free-form questions often say "he" or "his", so search with the person's name added.
+    names = [p for p in person.lower().split() if len(p) > 2]
+    search = question if any(n in question.lower() for n in names) else f"{person}: {question}"
+    hits = retrieve(collection_id, search)
     retrieved = [{"chunk_id": h["chunk_id"], "score": h["score"]} for h in hits]
     if not hits:
         prompt = f"(no LLM call: no chunk scored >= {MIN_SIMILARITY})"
-        response = NOT_FOUND
+        response, meta = NOT_FOUND, NO_CALL
     else:
         system = ANSWER_SYSTEM.replace("{person}", person)
         user = f"Question: {question}\n\nSource snippets:\n\n{_snippet_block(hits)}"
         prompt = f"SYSTEM:\n{system}\n\nUSER:\n{user}"
-        response = llm.chat(system, user).strip()
+        response, meta = llm.chat(system, user)
+        response = response.strip()
         if NOT_FOUND.lower() in response.lower() and len(response) < 60:
             response = NOT_FOUND
-    with engine.begin() as c:
-        c.execute(insert(query_logs).values(
-            run_id=run_id, collection_id=collection_id, kind=kind, qnum=qnum,
-            question=question, retrieved=dumps(retrieved), prompt=prompt,
-            response=response, model=CHAT_MODEL, created_at=now(),
-        ))
+    log(collection_id, kind, question, retrieved, prompt, response, meta, bool(hits), run_id, qnum)
     return {"qnum": qnum, "question": question, "retrieved": retrieved, "answer": response, "hits": hits}
 
 
@@ -138,18 +148,15 @@ def write_story(run_id: str, collection_id: str, person: str, results: list[dict
     if not found:
         story = "The sources contain nothing that answers any of the 20 questions, so there is no story to tell."
         prompt = "(no LLM call: every question was NOT IN THE SOURCES)"
+        meta = NO_CALL
     else:
         notes = "\n\n".join(f"Q{r['qnum']}. {r['question']}\nA: {r['answer']}" for r in sorted(results, key=lambda r: r["qnum"]))
         system = STORY_SYSTEM.replace("{person}", person)
         user = f"Research notes about {person}:\n\n{notes}"
         prompt = f"SYSTEM:\n{system}\n\nUSER:\n{user}"
-        story = llm.chat(system, user).strip()
-    with engine.begin() as c:
-        c.execute(insert(query_logs).values(
-            run_id=run_id, collection_id=collection_id, kind="story", qnum=None,
-            question="Weave the story", retrieved=dumps([]), prompt=prompt,
-            response=story, model=CHAT_MODEL, created_at=now(),
-        ))
+        story, meta = llm.chat(system, user)
+        story = story.strip()
+    log(collection_id, "story", "Weave the story from the 20 answers", [], prompt, story, meta, bool(found), run_id)
     return story
 
 
@@ -192,15 +199,9 @@ def audit_story(run_id: str, collection_id: str, story: str, results: list[dict]
         used = sorted({c for r in to_judge for c in r["citations"]})
         user = "Snippets:\n\n" + "\n\n".join(f"[{c}]\n{retrieved_text[c]}" for c in used)
         user += "\n\nSentences:\n" + "\n".join(f"{r['n']}. {r['sentence']} (cites {', '.join(r['citations'])})" for r in to_judge)
-        raw = llm.chat(AUDIT_SYSTEM, user, json_mode=True)
-        with engine.begin() as c:
-            c.execute(insert(query_logs).values(
-                run_id=run_id, collection_id=collection_id, kind="audit", qnum=None,
-                question="Check each story sentence against its cited chunks",
-                retrieved=dumps([{"chunk_id": c_} for c_ in used]),
-                prompt=f"SYSTEM:\n{AUDIT_SYSTEM}\n\nUSER:\n{user}", response=raw,
-                model=CHAT_MODEL, created_at=now(),
-            ))
+        raw, meta = llm.chat(AUDIT_SYSTEM, user, json_mode=True)
+        log(collection_id, "audit", "Check each story sentence against its cited chunks",
+            [{"chunk_id": c_} for c_ in used], f"SYSTEM:\n{AUDIT_SYSTEM}\n\nUSER:\n{user}", raw, meta, True, run_id)
         try:
             verdicts = {v["n"]: v for v in json.loads(raw).get("sentences", [])}
         except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
@@ -230,12 +231,30 @@ def audit_story(run_id: str, collection_id: str, story: str, results: list[dict]
 
 # ---------- run orchestration ----------
 
+def settings_snapshot(collection_id: str) -> dict:
+    """What a run was made with, so it can be explained and reproduced later."""
+    with engine.connect() as c:
+        docs = c.execute(
+            select(documents.c.id, documents.c.filename, documents.c.n_words, documents.c.n_chunks)
+            .where(documents.c.collection_id == collection_id).order_by(documents.c.created_at)
+        ).mappings().all()
+    return {
+        "chat_model": CHAT_MODEL, "embed_model": EMBED_MODEL, "top_k": TOP_K,
+        "min_similarity": MIN_SIMILARITY, "chunk_words": CHUNK_WORDS, "chunk_overlap": CHUNK_OVERLAP,
+        "corpus": {
+            "documents": [dict(d) for d in docs],
+            "n_chunks": sum(d["n_chunks"] for d in docs),
+            "n_words": sum(d["n_words"] for d in docs),
+        },
+    }
+
+
 def start_run(collection_id: str, person: str) -> str:
     run_id = new_id("r", 8)
     with engine.begin() as c:
         c.execute(insert(runs).values(
             id=run_id, collection_id=collection_id, person=person, status="running",
-            progress=0, created_at=now(),
+            progress=0, settings=dumps(settings_snapshot(collection_id)), created_at=now(),
         ))
     threading.Thread(target=_execute, args=(run_id, collection_id, person), daemon=True).start()
     return run_id
@@ -266,6 +285,6 @@ def _execute(run_id: str, collection_id: str, person: str):
         story = write_story(run_id, collection_id, person, results)
         _set(run_id, story=story, progress=21)
         audit = audit_story(run_id, collection_id, story, results)
-        _set(run_id, audit=dumps(audit), progress=22, status="done")
+        _set(run_id, audit=dumps(audit), progress=22, status="done", finished_at=now())
     except Exception as e:  # surface the failure in the UI instead of a silent dead thread
-        _set(run_id, status="error", error=f"{type(e).__name__}: {e}")
+        _set(run_id, status="error", error=f"{type(e).__name__}: {e}", finished_at=now())
