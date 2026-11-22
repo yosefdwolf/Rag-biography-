@@ -381,16 +381,13 @@
     const open = new Set([...document.querySelectorAll('.answer[open]')].map((d) => d.dataset.q));
     $('answers').innerHTML = list.map((a) => {
       const nf = a.answer === NOT_FOUND;
-      const removed = a.removed || [];
       const top = Math.max(...a.retrieved.map((h) => h.score), 0.0001);
       return `<details class="answer" data-q="${a.qnum}"${open.has(String(a.qnum)) ? ' open' : ''}>
         <summary><span class="qnum">Q${String(a.qnum).padStart(2, '0')}</span><span class="qtext">${esc(a.question)}</span>
-          <span class="badge ${nf ? 'none' : 'good'}">${nf ? 'Not in the sources' : 'Answered'}${removed.length ? ` · ${removed.length} removed` : ''}</span></summary>
+          <span class="badge ${nf ? 'none' : 'good'}">${nf ? 'Not in the sources' : 'Answered'}</span></summary>
         <div class="answer-body">
           ${a.search_query && a.search_query !== a.question ? `<p class="muted" style="font-size:13px;margin:12px 0 0">Searched as: <em>${esc(a.search_query)}</em></p>` : ''}
           <p class="answer-text${nf ? ' nf' : ''}">${nf ? 'Not in the sources.' : citeChips(a.answer)}</p>
-          ${removed.length ? `<p class="sub-label">Removed (not backed by the sources)</p><ul class="removed">${removed.map((c) =>
-            `<li><s>${esc(c.text)}</s><span class="why">${esc(c.reason)}</span></li>`).join('')}</ul>` : ''}
           <p class="sub-label">Retrieved chunks</p>
           ${a.retrieved.length ? `<div class="hits">${a.retrieved.map((h) => `<div class="hit">
               ${chunkBtn(h.chunk_id)}
@@ -452,12 +449,10 @@
   function paintCanary(rows) {
     $('canaryList').innerHTML = rows.length ? rows.map((r) => {
       const nf = r.response === NOT_FOUND;
-      const removed = r.removed || [];
       return `<div class="canary"><div class="canary-q"><span>${esc(r.question)}</span>
           <span class="badge ${nf ? 'good' : 'warn'}">${nf ? 'Not in the sources' : 'Answered from sources'}</span></div>
         ${r.search_query && r.search_query !== r.question ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Searched as: <em>${esc(r.search_query)}</em></p>` : ''}
         <p class="canary-a${nf ? ' nf' : ''}">${nf ? 'Not in the sources.' : citeChips(r.response)}</p>
-        ${removed.length ? `<ul class="removed">${removed.map((c) => `<li><s>${esc(c.text)}</s><span class="why">removed: ${esc(c.reason)}</span></li>`).join('')}</ul>` : ''}
         <div class="canary-meta">${r.retrieved.length ? 'Retrieved ' + r.retrieved.map((h) => chunkBtn(h.chunk_id)).join(' ') : 'No chunk stood out for this question'}
           · ${new Date(r.created_at).toLocaleString()}</div></div>`;
     }).join('') : '<div class="empty"><strong>No canary questions yet</strong>Try one fact you know is true but left out of the corpus.</div>';
