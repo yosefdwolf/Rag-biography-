@@ -1,0 +1,25 @@
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL") or "gpt-4.1-mini"
+EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL") or "text-embedding-3-small"
+
+# Railway hands out postgresql:// URLs; SQLAlchemy needs the psycopg (v3) driver named.
+_db = os.getenv("DATABASE_URL") or "sqlite:///./local.db"
+if _db.startswith("postgres://"):
+    _db = "postgresql://" + _db[len("postgres://"):]
+if _db.startswith("postgresql://"):
+    _db = "postgresql+psycopg://" + _db[len("postgresql://"):]
+DATABASE_URL = _db
+
+TOP_K = int(os.getenv("TOP_K") or 6)
+MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY") or 0.30)
+CHUNK_WORDS = int(os.getenv("CHUNK_WORDS") or 350)
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP") or 60)
+
+# Optional: when set, uploads and runs need this password (stops strangers spending your OpenAI credits).
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")

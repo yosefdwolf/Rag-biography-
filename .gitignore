@@ -1,0 +1,15 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# local data
+local.db
+*.db
+corpus/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

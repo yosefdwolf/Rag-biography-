@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Biography RAG</title>
+<style>
+  :root {
+    --bg: #faf8f4; --panel: #ffffff; --text: #1f1d1a; --muted: #6b665e; --line: #e4dfd6;
+    --accent: #8a4b1f; --accent-soft: #f3e7dc; --bad: #a3261a; --bad-soft: #fbe6e3; --ok: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --panel: #201f1c; --text: #ece8e1; --muted: #a39d93; --line: #35322d;
+      --accent: #e0a070; --accent-soft: #3a2a1e; --bad: #f08a7e; --bad-soft: #3d1f1b; --ok: #8fcf98;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 Georgia, "Iowan Old Style", serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; }
+  h2 { font-size: 1.25rem; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-family: system-ui, sans-serif; font-size: .9rem; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+  .ui, button, input, select, table { font-family: system-ui, sans-serif; font-size: .92rem; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=password], select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; flex: 1 1 200px; }
+  button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--panel); cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: var(--muted); }
+  .story p { margin: 0 0 1em; }
+  .cite { font-family: system-ui, sans-serif; font-size: .7rem; background: var(--accent-soft); color: var(--accent); border-radius: 4px; padding: 1px 5px; cursor: pointer; white-space: nowrap; }
+  .flagged { background: var(--bad-soft); outline: 1px solid var(--bad); border-radius: 3px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { border-top: 1px solid var(--line); padding: 8px 6px; vertical-align: top; text-align: left; }
+  th { color: var(--muted); font-weight: 500; }
+  .nf { color: var(--muted); font-style: italic; }
+  .bad { color: var(--bad); } .ok { color: var(--ok); }
+  details summary { cursor: pointer; color: var(--accent); }
+  pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font-size: .8rem; max-height: 360px; overflow: auto; }
+  #chunk { position: fixed; right: 16px; bottom: 16px; width: min(460px, calc(100vw - 32px)); max-height: 50vh; overflow: auto; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.2); display: none; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .tablewrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Biography RAG</h1>
+  <p class="sub">Upload pages about one person. Every sentence of the story is built only from retrieved snippets and cites the chunk it came from.</p>
+
+  <section class="ui" id="pwbox" style="display:none">
+    <div class="row"><input type="password" id="pw" placeholder="App password"><button onclick="savePw()">Save</button></div>
+  </section>
+
+  <section>
+    <h2>1. Person</h2>
+    <div class="row ui">
+      <select id="colSel" onchange="selectCol(this.value)"></select>
+      <input type="text" id="newPerson" placeholder="New person, e.g. Benjamin Franklin">
+      <button onclick="createCol()">Create</button>
+    </div>
+    <p class="ui muted" id="colInfo"></p>
+  </section>
+
+  <section>
+    <h2>2. Sources</h2>
+    <div class="row ui">
+      <input type="file" id="files" multiple accept=".txt,.pdf,.html,.htm,.md">
+      <button id="upBtn" onclick="upload()">Upload &amp; embed</button>
+    </div>
+    <p class="ui muted" id="upStatus"></p>
+    <div class="tablewrap"><table class="ui" id="docTable"></table></div>
+  </section>
+
+  <section>
+    <h2>3. Run the 20 queries and write the story</h2>
+    <div class="row ui">
+      <button id="runBtn" onclick="startRun()">Run</button>
+      <select id="runSel" onchange="loadRun(this.value)"></select>
+      <a id="logLink" class="ui" href="#" style="display:none">Download logs (JSON)</a>
+    </div>
+    <div class="bar"><div id="prog"></div></div>
+    <p class="ui muted" id="runStatus"></p>
+    <div id="storyBox" class="story"></div>
+    <div id="auditBox"></div>
+    <div id="answersBox"></div>
+  </section>
+
+  <section>
+    <h2>4. Canary / ask anything</h2>
+    <p class="ui muted">Ask something true about the person that is not in the corpus. The right answer is "NOT IN THE SOURCES".</p>
+    <div class="row ui">
+      <input type="text" id="canaryQ" placeholder="e.g. What was the name of Franklin's dog?">
+      <button onclick="ask()">Ask</button>
+    </div>
+    <div id="canaryOut" class="ui"></div>
+  </section>
+</main>
+
+<div id="chunk" class="ui"></div>
+
+<script>
+let cfg = {}, col = null, pollTimer = null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function pw() { try { return localStorage.getItem("ragpw") || ""; } catch { return ""; } }
+function savePw() { try { localStorage.setItem("ragpw", $("pw").value); } catch {} }
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({"X-App-Password": pw()}, opts.headers || {});
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function citeHtml(text) {
+  return esc(text).replace(/\[([A-Za-z0-9_\-]+(?:\s*,\s*[A-Za-z0-9_\-]+)*)\]/g, (_, ids) =>
+    ids.split(",").map(i => i.trim()).map(i => `<span class="cite" onclick="showChunk('${i}')">${i}</span>`).join(" "));
+}
+
+async function showChunk(id) {
+  const box = $("chunk");
+  box.style.display = "block";
+  box.innerHTML = "Loading…";
+  try {
+    const c = await api(`/api/chunks/${id}`);
+    box.innerHTML = `<div class="row" style="justify-content:space-between"><strong>${esc(c.id)}</strong><button class="secondary" onclick="$('chunk').style.display='none'">Close</button></div>
+      <p class="muted">${esc(c.filename)} · chunk ${c.ord}</p><p style="font-family:Georgia,serif">${esc(c.text)}</p>`;
+  } catch (e) { box.textContent = e.message; }
+}
+
+async function loadCols(selectId) {
+  const cols = await api("/api/collections");
+  $("colSel").innerHTML = cols.length
+    ? cols.map(c => `<option value="${c.id}">${esc(c.person)} (${c.n_chunks} chunks)</option>`).join("")
+    : `<option value="">No people yet</option>`;
+  const id = selectId || (cols[0] && cols[0].id);
+  if (id) { $("colSel").value = id; await selectCol(id); }
+}
+
+async function createCol() {
+  const person = $("newPerson").value.trim();
+  if (!person) return;
+  try { const c = await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({person})}); $("newPerson").value = ""; await loadCols(c.id); }
+  catch (e) { alert(e.message); }
+}
+
+async function selectCol(id) {
+  if (!id) return;
+  col = await api(`/api/collections/${id}`);
+  $("colInfo").textContent = `${col.documents.length} documents · ${col.n_words.toLocaleString()} words · ~${col.est_pages} pages · ${col.n_chunks} chunks · embed ${cfg.embed_model}, chat ${cfg.chat_model}, top-${cfg.top_k}, min similarity ${cfg.min_similarity}`;
+  $("docTable").innerHTML = col.documents.length
+    ? `<tr><th>File</th><th>Words</th><th>Chunks</th><th>Doc ID</th></tr>` + col.documents.map(d => `<tr><td>${esc(d.filename)}</td><td>${d.n_words.toLocaleString()}</td><td>${d.n_chunks}</td><td>${d.id}</td></tr>`).join("")
+    : "";
+  $("runSel").innerHTML = col.runs.length
+    ? col.runs.map(r => `<option value="${r.id}">Run ${r.id} · ${r.status} · ${r.created_at}</option>`).join("")
+    : `<option value="">No runs yet</option>`;
+  ["storyBox", "auditBox", "answersBox", "runStatus", "canaryOut"].forEach(i => $(i).innerHTML = "");
+  $("logLink").style.display = "none"; $("prog").style.width = "0";
+  if (col.runs.length) loadRun(col.runs[0].id);
+}
+
+async function upload() {
+  const files = $("files").files;
+  if (!col || !files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  $("upBtn").disabled = true; $("upStatus").textContent = `Chunking and embedding ${files.length} file(s)…`;
+  try {
+    const r = await api(`/api/collections/${col.id}/upload`, {method: "POST", body: fd});
+    $("upStatus").textContent = r.added.map(a => `${a.filename}: ${a.n_chunks} chunks`).join(" · ");
+    $("files").value = ""; await loadCols(col.id);
+  } catch (e) { $("upStatus").textContent = "Error: " + e.message; }
+  $("upBtn").disabled = false;
+}
+
+async function startRun() {
+  if (!col) return;
+  $("runBtn").disabled = true;
+  try { const r = await api(`/api/collections/${col.id}/runs`, {method: "POST"}); await selectCol(col.id); loadRun(r.run_id); }
+  catch (e) { alert(e.message); }
+  $("runBtn").disabled = false;
+}
+
+async function loadRun(id) {
+  clearTimeout(pollTimer);
+  if (!id) return;
+  const r = await api(`/api/runs/${id}`);
+  $("runSel").value = id;
+  $("prog").style.width = `${Math.round((r.progress || 0) / 22 * 100)}%`;
+  const stage = r.progress < 20 ? `answering questions (${r.progress}/20)` : r.progress === 20 ? "writing the story" : r.progress === 21 ? "auditing the story" : "done";
+  $("runStatus").textContent = r.status === "error" ? `Error: ${r.error}` : r.status === "running" ? `Running: ${stage}…` : `Run ${r.id} finished ${r.created_at}`;
+  $("logLink").href = `/api/runs/${id}/logs.json`; $("logLink").style.display = "";
+
+  const flagged = new Set((r.audit?.sentences || []).filter(s => s.flag).map(s => s.sentence));
+  $("storyBox").innerHTML = r.story
+    ? `<h2 style="margin-top:20px">The story</h2>` + r.story.split(/\n\s*\n/).map(p => {
+        let html = citeHtml(p);
+        flagged.forEach(s => { const h = citeHtml(s); if (html.includes(h)) html = html.replace(h, `<span class="flagged" title="Flagged by audit">${h}</span>`); });
+        return `<p>${html}</p>`;
+      }).join("")
+    : "";
+
+  if (r.audit) {
+    const a = r.audit;
+    $("auditBox").innerHTML = `<h2 style="margin-top:24px">Audit</h2>
+      <p class="ui">${a.total} sentences, <span class="${a.flagged ? "bad" : "ok"}">${a.flagged} flagged</span>. Questions answered "not in the sources": ${a.questions_not_in_sources.length ? a.questions_not_in_sources.join(", ") : "none"}.</p>
+      <details class="ui"><summary>Sentence-by-sentence trace</summary><div class="tablewrap"><table>
+        <tr><th>#</th><th>Sentence</th><th>Chunks</th><th>Check</th></tr>
+        ${a.sentences.map(s => `<tr><td>${s.n}</td><td>${esc(s.sentence.replace(/\s*\[[^\]]+\]/g, ""))}</td><td>${s.citations.map(c => `<span class="cite" onclick="showChunk('${c}')">${c}</span>`).join(" ") || "–"}</td>
+          <td class="${s.flag ? "bad" : "ok"}">${s.flag ? esc(s.flag) + (s.outside_claims ? `<br><span class="muted">${esc(s.outside_claims)}</span>` : "") : esc(s.verdict || "ok")}</td></tr>`).join("")}
+      </table></div></details>`;
+  } else $("auditBox").innerHTML = "";
+
+  $("answersBox").innerHTML = r.answers.length ? `<h2 style="margin-top:24px">The 20 answers</h2><div class="ui">` + r.answers.map(x => `
+    <details style="margin-bottom:10px"><summary>${x.qnum}. ${esc(x.question)}</summary>
+      <p class="${x.answer === "NOT IN THE SOURCES" ? "nf" : ""}" style="font-family:Georgia,serif">${citeHtml(x.answer)}</p>
+      <p class="muted">Retrieved: ${x.retrieved.map(h => `<span class="cite" onclick="showChunk('${h.chunk_id}')">${h.chunk_id}</span> ${h.score}`).join(" · ") || "nothing above threshold"}</p>
+      <details><summary>Prompt sent</summary><pre>${esc(x.prompt)}</pre></details>
+    </details>`).join("") + `</div>` : "";
+
+  if (r.status === "running") pollTimer = setTimeout(() => loadRun(id), 2000);
+  else if (col) { const c = await api(`/api/collections/${col.id}`); $("runSel").innerHTML = c.runs.map(x => `<option value="${x.id}">Run ${x.id} · ${x.status} · ${x.created_at}</option>`).join(""); $("runSel").value = id; }
+}
+
+async function ask() {
+  const q = $("canaryQ").value.trim();
+  if (!col || !q) return;
+  $("canaryOut").innerHTML = "<p class='muted'>Asking…</p>";
+  try {
+    const r = await api(`/api/collections/${col.id}/ask`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q})});
+    $("canaryOut").innerHTML = `<p class="${r.answer === "NOT IN THE SOURCES" ? "ok" : ""}" style="font-family:Georgia,serif">${citeHtml(r.answer)}</p>
+      <p class="muted">Retrieved: ${r.retrieved.map(h => `<span class="cite" onclick="showChunk('${h.chunk_id}')">${h.chunk_id}</span> ${h.score}`).join(" · ") || "nothing above threshold"}</p>`;
+  } catch (e) { $("canaryOut").textContent = "Error: " + e.message; }
+}
+
+(async () => {
+  cfg = await api("/api/config");
+  if (cfg.password_required) { $("pwbox").style.display = ""; $("pw").value = pw(); }
+  await loadCols();
+})();
+</script>
+</body>
+</html>
