@@ -34,6 +34,7 @@ chunks = Table(
     Column("collection_id", String, index=True),
     Column("document_id", String, index=True),
     Column("ord", Integer),
+    Column("section", String),  # which work inside the file (or the file's title)
     Column("text", Text),
     Column("embedding", LargeBinary),  # float32 bytes, L2-normalised
 )
@@ -62,9 +63,12 @@ query_logs = Table(
     Column("kind", String),  # query | story | audit | canary
     Column("qnum", Integer, nullable=True),
     Column("question", Text),
-    Column("retrieved", Text),  # JSON [{chunk_id, score}]
+    Column("search_query", Text),  # the question as rewritten for the embedding search
+    Column("retrieved", Text),  # JSON [{chunk_id, score, z}]
     Column("prompt", Text),
-    Column("response", Text),
+    Column("response", Text),  # the verified answer (only claims that passed the checks)
+    Column("raw_response", Text),  # what the model actually returned, before checks
+    Column("checks", Text),  # JSON: question check + every claim with kept/removed and why
     Column("model", String),
     Column("llm_called", Integer),  # 0 when nothing cleared the similarity threshold
     Column("tokens_in", Integer),

@@ -33,6 +33,35 @@ def strip_gutenberg(text: str) -> str:
     return text
 
 
+SECTION_RE = re.compile(r"^\s*={3,}\s*(.+?)\s*={3,}\s*$", re.M)
+
+
+def split_sections(text: str, fallback_title: str) -> list[tuple[str, str]]:
+    """Files can hold several works, each opened by a line like '==== Title ===='.
+    Each chunk then knows which work it came from. Files without such lines are one section."""
+    marks = list(SECTION_RE.finditer(text))
+    if not marks:
+        return [(fallback_title, text)]
+    out = []
+    if text[: marks[0].start()].strip():
+        out.append((fallback_title, text[: marks[0].start()]))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out.append((m.group(1).strip(), text[m.end():end]))
+    return [(t, body) for t, body in out if body.strip()]
+
+
+def title_from_filename(filename: str) -> str:
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", filename or "upload")
+    return re.sub(r"[-_]+", " ", stem).strip() or "upload"
+
+
+def embedding_text(person: str, section: str, chunk: str) -> str:
+    """What gets embedded: the chunk plus who and what it is from. First-person text ("I was born...")
+    rarely names its subject, so without this a question naming the person can't find it."""
+    return f"Source: {section}\nAbout: {person}\n\n{chunk}"
+
+
 def chunk_text(text: str, size: int = CHUNK_WORDS, overlap: int = CHUNK_OVERLAP) -> list[str]:
     words = text.split()
     if not words:

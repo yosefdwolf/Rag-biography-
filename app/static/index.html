@@ -62,7 +62,7 @@
     <ol class="how">
       <li><strong>Upload</strong><span>PDF, HTML, TXT or Markdown pages about one person.</span></li>
       <li><strong>Retrieve</strong><span>20 questions each pull the closest chunks from the store.</span></li>
-      <li><strong>Write</strong><span>The story uses only those snippets, and each sentence is traced and audited.</span></li>
+      <li><strong>Verify</strong><span>Every claim must quote its chunk word for word. Anything that can't is removed.</span></li>
     </ol>
   </section>
 
@@ -96,9 +96,8 @@
 
     <div class="progress-card" id="progressCard" hidden>
       <ol class="steps" id="steps">
-        <li data-step="0"><span class="dot"></span><div><strong>Retrieve &amp; answer</strong><small id="stepQ">0 / 20 questions</small></div></li>
-        <li data-step="1"><span class="dot"></span><div><strong>Write the story</strong><small>Only from cited answers</small></div></li>
-        <li data-step="2"><span class="dot"></span><div><strong>Audit</strong><small>Trace every sentence</small></div></li>
+        <li data-step="0"><span class="dot"></span><div><strong>Retrieve, answer &amp; verify</strong><small id="stepQ">0 / 20 questions</small></div></li>
+        <li data-step="1"><span class="dot"></span><div><strong>Write &amp; verify the story</strong><small>Only from verified claims</small></div></li>
       </ol>
       <div class="bar"><div id="bar"></div></div>
     </div>
@@ -116,7 +115,6 @@
       <div class="panel-head">
         <select id="runSel" class="run-select" aria-label="Run"></select>
         <div class="panel-tools">
-          <label class="toggle"><input type="checkbox" id="highlight" checked><span>Highlight flagged</span></label>
           <span class="dl" id="logLinks" hidden>
             <button class="btn ghost sm" type="button" data-download="md">Report (.md)</button>
             <button class="btn ghost sm" type="button" data-download="json">Logs (.json)</button>
@@ -135,8 +133,9 @@
     <!-- Audit -->
     <section class="panel" data-panel="audit" hidden>
       <div class="tiles" id="tiles"></div>
-      <p class="panel-intro muted">Each story sentence is checked three ways: it has a citation, the cited chunk was actually retrieved in this run, and a separate model call confirms the chunk states the claim. Anything that fails is flagged as possible training-data content.</p>
+      <p class="panel-intro muted">Every claim, in each answer and in the story, has to quote a retrieved chunk word for word. Code checks the quote really is in that chunk and that every number and name in the claim appears there, then a separate model call checks the quote actually says what the claim says. Claims that fail are removed. They are what the model tried to add from its own training data.</p>
       <div class="table-wrap"><table class="table" id="auditTable"></table></div>
+      <div id="removedBox"></div>
     </section>
 
     <!-- Sources -->
@@ -161,6 +160,11 @@
     <!-- Canary -->
     <section class="panel" data-panel="canary" hidden>
       <p class="panel-intro muted">Ask something true about this person that is <strong>not</strong> in the uploaded sources. The right answer is <em>not in the sources</em>. Any question goes through the same retrieval and prompt as the 20.</p>
+      <div class="follow-up" id="followUp" hidden>
+        <div><p class="eyebrow">Follow-up needed</p><p class="follow-up-text" id="followUpText"></p>
+          <p class="muted" style="font-size:13px;margin:0">About: <em id="followUpQ"></em></p></div>
+        <button class="icon-btn" type="button" id="followUpCancel" aria-label="Cancel">✕</button>
+      </div>
       <form class="ask" id="askForm">
         <input type="text" id="canaryQ" placeholder="Ask a question about this person" autocomplete="off">
         <button class="btn primary" type="submit" id="askBtn">Ask</button>

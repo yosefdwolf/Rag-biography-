@@ -289,7 +289,7 @@
     $('runBtn').disabled = running || !col.n_chunks;
     if (!running) return;
     const p = run.progress || 0;
-    const stage = p < 20 ? 0 : p === 20 ? 1 : 2;
+    const stage = p < 20 ? 0 : 1;
     card.querySelectorAll('li').forEach((li) => {
       const s = Number(li.dataset.step);
       li.className = s < stage ? 'done' : s === stage ? 'active' : '';
@@ -320,10 +320,10 @@
     if (run) download(`/api/runs/${run.id}/report.${b.dataset.download}`).catch(fail);
   }));
 
-  // ---------- story ----------
+  // ---------- citations ----------
 
   const CITE = /\[([A-Za-z0-9_\-]+(?:\s*,\s*[A-Za-z0-9_\-]+)*)\]/g;
-  const splitSentences = (para) => para.split(/(?<=[.!?\]])\s+(?=[A-Z"“‘(])/).filter((s) => s.trim());
+  const chunkBtn = (id, quote) => `<button class="cite inline" data-chunk="${esc(id)}"${quote ? ` data-quote="${esc(quote)}"` : ''}>${esc(id)}</button>`;
 
   function citeChips(text, numbers) {
     return esc(text).replace(CITE, (_, ids) => ids.split(',').map((i) => i.trim()).map((i) => {
@@ -331,9 +331,19 @@
         if (!numbers.has(i)) numbers.set(i, numbers.size + 1);
         return `<button class="cite" data-chunk="${i}" title="${i}">${numbers.get(i)}</button>`;
       }
-      return `<button class="cite inline" data-chunk="${i}">${i}</button>`;
+      return chunkBtn(i);
     }).join(''));
   }
+
+  // Claims removed anywhere in this run: from the 20 answers and from the story.
+  function removedCount() {
+    if (!run) return 0;
+    const fromAnswers = run.answers.reduce((n, a) => n + (a.removed || []).length, 0);
+    const fromStory = run.audit ? (run.audit.removed ?? run.audit.flagged ?? 0) : 0;
+    return fromAnswers + fromStory;
+  }
+
+  // ---------- story ----------
 
   function paintStory() {
     const box = $('story');
@@ -346,25 +356,17 @@
       return;
     }
     if (run.status === 'error') { box.innerHTML = `<div class="empty"><strong>This run failed</strong>${esc(run.error)}</div>`; return; }
-    if (!run.story) { box.innerHTML = `<div class="empty"><strong>Writing…</strong>The story appears once all 20 questions are answered.</div>`; return; }
+    if (!run.story) { box.innerHTML = `<div class="empty"><strong>Writing…</strong>The story appears once all 20 questions are answered and checked.</div>`; return; }
 
-    const audit = run.audit ? run.audit.sentences : [];
     const numbers = new Map();
-    let n = 0;
     const paras = run.story.split(/\n\s*\n/).map((p) => p.split(/\s+/).join(' ')).filter(Boolean);
-    const html = paras.map((p) => `<p>${splitSentences(p).map((s) => {
-      const a = audit[n++];
-      const flag = a && a.flag;
-      return `<span class="sent${flag ? ' flagged' : ''}"${flag ? ` title="${esc(a.flag)}${a.outside_claims ? ': ' + esc(a.outside_claims) : ''}"` : ''}>${citeChips(s, numbers)}</span>`;
-    }).join(' ')}</p>`).join('');
-    const flagged = run.audit ? run.audit.flagged : null;
-    box.innerHTML = `<div class="story-body">${html}</div>
-      <div class="story-foot"><span>${n} sentences</span><span>${numbers.size} chunks cited</span>
-      ${flagged === null ? '<span>Audit running…</span>' : `<span>${flagged ? `<b style="color:var(--bad)">${flagged} flagged</b>` : 'No sentence flagged'}</span>`}
+    const removed = removedCount();
+    box.innerHTML = `<div class="story-body">${paras.map((p) => `<p>${citeChips(p, numbers)}</p>`).join('')}</div>
+      <div class="story-foot"><span>${numbers.size} chunks cited</span>
+      <span>${removed ? `<a href="#" data-goto="audit"><b style="color:var(--bad)">${removed} unsupported claim${removed === 1 ? '' : 's'} removed</b></a>` : 'Every claim verified against its chunk'}</span>
       <span>Click a number to read the chunk</span></div>`;
-    box.classList.toggle('hl', $('highlight').checked);
+    box.querySelector('[data-goto]')?.addEventListener('click', (e) => { e.preventDefault(); setTab('audit'); });
   }
-  $('highlight').addEventListener('change', (e) => $('story').classList.toggle('hl', e.target.checked));
 
   // ---------- answers ----------
 
@@ -379,18 +381,22 @@
     const open = new Set([...document.querySelectorAll('.answer[open]')].map((d) => d.dataset.q));
     $('answers').innerHTML = list.map((a) => {
       const nf = a.answer === NOT_FOUND;
+      const removed = a.removed || [];
       const top = Math.max(...a.retrieved.map((h) => h.score), 0.0001);
       return `<details class="answer" data-q="${a.qnum}"${open.has(String(a.qnum)) ? ' open' : ''}>
         <summary><span class="qnum">Q${String(a.qnum).padStart(2, '0')}</span><span class="qtext">${esc(a.question)}</span>
-          <span class="badge ${nf ? 'none' : 'good'}">${nf ? 'Not in the sources' : 'Answered'}</span></summary>
+          <span class="badge ${nf ? 'none' : 'good'}">${nf ? 'Not in the sources' : 'Answered'}${removed.length ? ` · ${removed.length} removed` : ''}</span></summary>
         <div class="answer-body">
+          ${a.search_query && a.search_query !== a.question ? `<p class="muted" style="font-size:13px;margin:12px 0 0">Searched as: <em>${esc(a.search_query)}</em></p>` : ''}
           <p class="answer-text${nf ? ' nf' : ''}">${nf ? 'Not in the sources.' : citeChips(a.answer)}</p>
+          ${removed.length ? `<p class="sub-label">Removed (not backed by the sources)</p><ul class="removed">${removed.map((c) =>
+            `<li><s>${esc(c.text)}</s><span class="why">${esc(c.reason)}</span></li>`).join('')}</ul>` : ''}
           <p class="sub-label">Retrieved chunks</p>
           ${a.retrieved.length ? `<div class="hits">${a.retrieved.map((h) => `<div class="hit">
-              <button class="cite inline" data-chunk="${h.chunk_id}">${h.chunk_id}</button>
+              ${chunkBtn(h.chunk_id)}
               <div class="score"><div style="width:${Math.round((h.score / top) * 100)}%"></div></div>
-              <span class="score-n">${h.score.toFixed(3)}</span></div>`).join('')}</div>`
-            : `<p class="muted" style="font-size:14px;margin:0">Nothing scored above ${cfg.min_similarity}, so no model call was made.</p>`}
+              <span class="score-n" title="similarity · how far above the corpus average">${h.score.toFixed(3)}${h.z != null ? ` · z ${h.z}` : ''}</span></div>`).join('')}</div>`
+            : `<p class="muted" style="font-size:14px;margin:0">No chunk stood out for this question, so the model wasn’t asked.</p>`}
           <details class="prompt-toggle"><summary>Prompt sent</summary><pre>${esc(a.prompt)}</pre></details>
         </div></details>`;
     }).join('');
@@ -402,31 +408,40 @@
 
   function paintAudit() {
     const a = run && run.audit;
-    $('auditCount').textContent = a ? (a.flagged || '✓') : '';
-    $('auditCount').classList.toggle('bad', !!(a && a.flagged));
+    const removedAnswers = run ? run.answers.flatMap((x) => (x.removed || []).map((c) => ({ ...c, qnum: x.qnum }))) : [];
+    const total = removedCount();
+    $('auditCount').textContent = a ? (total || '✓') : '';
+    $('auditCount').classList.toggle('bad', !!total);
     if (!a) {
-      $('tiles').innerHTML = `<div class="empty" style="grid-column:1/-1"><strong>No audit yet</strong>${run ? 'The audit runs after the story is written.' : 'Generate a story first.'}</div>`;
-      $('auditTable').innerHTML = '';
+      $('tiles').innerHTML = `<div class="empty" style="grid-column:1/-1"><strong>No audit yet</strong>${run ? 'The audit appears once the story is written.' : 'Generate a story first.'}</div>`;
+      $('auditTable').innerHTML = ''; $('removedBox').innerHTML = '';
       return;
     }
-    const traced = a.total - a.flagged;
+    const sentences = a.sentences || [];
+    const isNew = sentences.some((s) => 'status' in s);
+    const keptN = isNew ? sentences.filter((s) => s.status === 'kept').length : a.total - a.flagged;
+    const storyRemoved = isNew ? sentences.length - keptN : a.flagged;
     $('tiles').innerHTML = `
-      <div class="tile"><b>${a.total}</b><span>sentences in the story</span></div>
-      <div class="tile good"><b>${traced}</b><span>traced to a chunk</span></div>
-      <div class="tile ${a.flagged ? 'bad' : 'good'}"><b>${a.flagged}</b><span>flagged as possible training data</span></div>
+      <div class="tile good"><b>${keptN}</b><span>story sentences verified</span></div>
+      <div class="tile ${storyRemoved ? 'bad' : 'good'}"><b>${storyRemoved}</b><span>story sentences removed</span></div>
+      <div class="tile ${removedAnswers.length ? 'bad' : 'good'}"><b>${removedAnswers.length}</b><span>answer claims removed</span></div>
       <div class="tile"><b>${a.questions_not_in_sources.length}</b><span>questions not in the sources${a.questions_not_in_sources.length ? ` (Q${a.questions_not_in_sources.join(', Q')})` : ''}</span></div>`;
-    const label = (s) => {
-      if (s.flag === 'no citation') return '<span class="badge bad">No citation</span>';
-      if (s.invalid_citations.length) return '<span class="badge bad">Not retrieved</span>';
-      if (s.verdict === 'unsupported') return '<span class="badge bad">Unsupported</span>';
-      if (s.verdict === 'partial') return '<span class="badge warn">Partly supported</span>';
-      return '<span class="badge good">Supported</span>';
-    };
-    $('auditTable').innerHTML = `<thead><tr><th>#</th><th>Sentence</th><th>Chunks</th><th>Check</th></tr></thead><tbody>${a.sentences.map((s) => `
-      <tr class="${s.flag ? 'flag-row' : ''}"><td class="mono">${s.n}</td>
-        <td class="sentence">${esc(s.sentence.replace(/\s*\[[^\]]+\]/g, ''))}</td>
-        <td>${s.citations.map((c) => `<button class="cite inline" data-chunk="${c}">${c}</button>`).join(' ') || '<span class="muted">none</span>'}</td>
-        <td>${label(s)}${s.outside_claims ? `<span class="why">Not in chunk: ${esc(s.outside_claims)}</span>` : ''}</td></tr>`).join('')}</tbody>`;
+
+    const rows = sentences.map((s) => isNew ? s : {
+      n: s.n, text: s.sentence.replace(/\s*\[[^\]]+\]/g, ''), chunk_ids: s.citations, quotes: [],
+      status: s.flag ? 'removed' : 'kept', reason: s.flag ? s.flag + (s.outside_claims ? `: ${s.outside_claims}` : '') : null });
+    $('auditTable').innerHTML = `<thead><tr><th>#</th><th>Story sentence</th><th>Proof (exact quote)</th><th>Result</th></tr></thead><tbody>${rows.map((s) => `
+      <tr class="${s.status !== 'kept' ? 'flag-row' : ''}"><td class="mono">${s.n}</td>
+        <td class="sentence">${esc(s.text)}</td>
+        <td>${s.quotes.length ? s.quotes.map((q) => `<span class="quote">“${esc(q)}”</span>`).join('') : ''}
+          <div>${s.chunk_ids.map((c) => chunkBtn(c, s.quotes[0])).join(' ') || '<span class="muted">no chunk</span>'}</div></td>
+        <td>${s.status === 'kept' ? '<span class="badge good">Verified</span>' : `<span class="badge bad">Removed</span><span class="why">${esc(s.reason)}</span>`}</td></tr>`).join('')}</tbody>`;
+
+    $('removedBox').innerHTML = removedAnswers.length ? `<h3 class="sub-head">Claims removed from the 20 answers</h3>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Q</th><th>Claim the model wrote</th><th>Why it was removed</th></tr></thead><tbody>
+      ${removedAnswers.map((c) => `<tr class="flag-row"><td class="mono">Q${c.qnum}</td><td class="sentence">${esc(c.text)}</td><td>${esc(c.reason)}
+        ${c.chunk_ids && c.chunk_ids.length ? `<div style="margin-top:6px">${c.chunk_ids.map((x) => chunkBtn(x, (c.quotes || [])[0])).join(' ')}</div>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : '';
   }
 
   // ---------- canary ----------
@@ -437,41 +452,77 @@
   function paintCanary(rows) {
     $('canaryList').innerHTML = rows.length ? rows.map((r) => {
       const nf = r.response === NOT_FOUND;
+      const removed = r.removed || [];
       return `<div class="canary"><div class="canary-q"><span>${esc(r.question)}</span>
           <span class="badge ${nf ? 'good' : 'warn'}">${nf ? 'Not in the sources' : 'Answered from sources'}</span></div>
+        ${r.search_query && r.search_query !== r.question ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Searched as: <em>${esc(r.search_query)}</em></p>` : ''}
         <p class="canary-a${nf ? ' nf' : ''}">${nf ? 'Not in the sources.' : citeChips(r.response)}</p>
-        <div class="canary-meta">${r.retrieved.length ? 'Retrieved ' + r.retrieved.map((h) => `<button class="cite inline" data-chunk="${h.chunk_id}">${h.chunk_id}</button>`).join(' ') : `Nothing scored above ${cfg.min_similarity}`}
+        ${removed.length ? `<ul class="removed">${removed.map((c) => `<li><s>${esc(c.text)}</s><span class="why">removed: ${esc(c.reason)}</span></li>`).join('')}</ul>` : ''}
+        <div class="canary-meta">${r.retrieved.length ? 'Retrieved ' + r.retrieved.map((h) => chunkBtn(h.chunk_id)).join(' ') : 'No chunk stood out for this question'}
           · ${new Date(r.created_at).toLocaleString()}</div></div>`;
     }).join('') : '<div class="empty"><strong>No canary questions yet</strong>Try one fact you know is true but left out of the corpus.</div>';
   }
-  $('askForm').addEventListener('submit', async (e) => {
+
+  let pendingQuestion = null;  // set while the app waits for the answer to a follow-up
+  async function ask(question, clarification) {
+    const btn = $('askBtn');
+    busy(btn, true, 'Asking…');
+    try {
+      const r = await api(`/api/collections/${col.id}/ask`, json({ question, clarification }));
+      if (r.follow_up) {
+        pendingQuestion = question;
+        $('followUp').hidden = false;
+        $('followUpText').textContent = r.follow_up;
+        $('followUpQ').textContent = question;
+        $('canaryQ').value = '';
+        $('canaryQ').placeholder = 'Your answer to the follow-up';
+        $('canaryQ').focus();
+      } else {
+        pendingQuestion = null;
+        $('followUp').hidden = true;
+        $('canaryQ').value = '';
+        $('canaryQ').placeholder = 'Ask a question about this person';
+        await loadCanary();
+      }
+    } catch (err) { fail(err); } finally { busy(btn, false); }
+  }
+  $('askForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const q = $('canaryQ').value.trim();
     if (!q || !col) return;
-    const btn = $('askBtn');
-    busy(btn, true, 'Asking…');
-    try { await api(`/api/collections/${col.id}/ask`, json({ question: q })); $('canaryQ').value = ''; await loadCanary(); }
-    catch (err) { fail(err); } finally { busy(btn, false); }
+    if (pendingQuestion) ask(pendingQuestion, q); else ask(q);
+  });
+  $('followUpCancel').addEventListener('click', () => {
+    pendingQuestion = null; $('followUp').hidden = true; $('canaryQ').placeholder = 'Ask a question about this person';
   });
 
   // ---------- chunk drawer ----------
 
   const drawer = $('drawer'), scrim = $('scrim');
-  async function openChunk(id) {
+  async function openChunk(id, quote) {
     $('drawerTitle').textContent = id;
     $('drawerMeta').textContent = 'Loading…';
     $('drawerBody').textContent = '';
     drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false'); scrim.hidden = false;
     try {
       const c = await api(`/api/chunks/${id}`);
-      $('drawerMeta').textContent = `${c.filename} · chunk ${c.ord + 1}`;
-      $('drawerBody').innerHTML = `<p>${esc(c.text)}</p>`;
+      $('drawerMeta').textContent = `${c.section || c.filename} · chunk ${c.ord + 1}`;
+      $('drawerBody').innerHTML = `<p>${markQuote(esc(c.text), quote)}</p>`;
+      $('drawerBody').querySelector('mark')?.scrollIntoView({ block: 'center' });
     } catch (e) { $('drawerMeta').textContent = 'Not found'; $('drawerBody').textContent = e.message; }
+  }
+  // Highlight the quoted words in the chunk, ignoring spacing, case and line-break hyphens.
+  function markQuote(html, quote) {
+    if (!quote) return html;
+    const words = esc(quote).split(/\s+/).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (words.length < 2) return html;
+    const re = new RegExp(words.join('[\\s\\-]+'), 'i');
+    return html.replace(re, (m) => `<mark>${m}</mark>`);
   }
   function closeChunk() { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); scrim.hidden = true; }
   document.addEventListener('click', (e) => {
     const c = e.target.closest('[data-chunk]');
-    if (c) { e.preventDefault(); e.stopPropagation(); openChunk(c.dataset.chunk); }
+    if (c) { e.preventDefault(); e.stopPropagation(); openChunk(c.dataset.chunk, c.dataset.quote); }
   });
   $('drawerClose').addEventListener('click', closeChunk);
   scrim.addEventListener('click', closeChunk);

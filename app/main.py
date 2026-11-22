@@ -10,9 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select
 
 from . import llm, rag, report
-from .config import APP_PASSWORD, CHAT_MODEL, EMBED_MODEL, MIN_SIMILARITY, TOP_K
+from .config import APP_PASSWORD, CHAT_MODEL, EMBED_MODEL, MIN_SIMILARITY, MIN_Z, TOP_K
 from .db import chunks, collections, documents, init_db, new_id, now, query_logs, runs, engine
-from .ingest import chunk_text, extract_text
+from .ingest import chunk_text, embedding_text, extract_text, split_sections, title_from_filename
 
 app = FastAPI(title="Biography RAG")
 STATIC = Path(__file__).parent / "static"
@@ -73,7 +73,7 @@ def admin_page():
 def config():
     return {
         "chat_model": CHAT_MODEL, "embed_model": EMBED_MODEL, "top_k": TOP_K,
-        "min_similarity": MIN_SIMILARITY, "password_set": bool(APP_PASSWORD),
+        "min_similarity": MIN_SIMILARITY, "min_z": MIN_Z, "password_set": bool(APP_PASSWORD),
         "questions": rag.QUESTIONS,
     }
 
@@ -132,7 +132,7 @@ def get_collection(cid: str):
 @app.delete("/api/collections/{cid}", dependencies=[Depends(check_pw)])
 def delete_collection(cid: str):
     with engine.begin() as c:
-        for t in (chunks, documents):
+        for t in (chunks, documents, runs, query_logs):
             c.execute(delete(t).where(t.c.collection_id == cid))
         c.execute(delete(collections).where(collections.c.id == cid))
     rag.invalidate(cid)
@@ -142,17 +142,20 @@ def delete_collection(cid: str):
 @app.post("/api/collections/{cid}/upload", dependencies=[Depends(check_pw)])
 async def upload(cid: str, files: list[UploadFile] = File(...)):
     with engine.connect() as c:
-        if not c.execute(select(collections.c.id).where(collections.c.id == cid)).first():
-            raise HTTPException(404, "No such collection")
+        col = c.execute(select(collections).where(collections.c.id == cid)).mappings().first()
+    if not col:
+        raise HTTPException(404, "No such collection")
     added = []
     for f in files:
         data = await f.read()
         text = extract_text(f.filename or "upload.txt", data)
-        pieces = chunk_text(text)
+        # Chunk each work in the file separately so a chunk never spans two books and knows its source.
+        pieces = [(title, p) for title, body in split_sections(text, title_from_filename(f.filename))
+                  for p in chunk_text(body)]
         if not pieces:
             added.append({"filename": f.filename, "n_chunks": 0, "note": "no text extracted"})
             continue
-        vecs = llm.embed(pieces)
+        vecs = llm.embed([embedding_text(col["person"], title, p) for title, p in pieces])
         did = new_id("d")
         with engine.begin() as c:
             c.execute(insert(documents).values(
@@ -161,8 +164,8 @@ async def upload(cid: str, files: list[UploadFile] = File(...)):
             ))
             c.execute(insert(chunks), [
                 {"id": f"{did}-c{i:04d}", "collection_id": cid, "document_id": did, "ord": i,
-                 "text": p, "embedding": v.astype(np.float32).tobytes()}
-                for i, (p, v) in enumerate(zip(pieces, vecs))
+                 "section": title, "text": p, "embedding": v.astype(np.float32).tobytes()}
+                for i, ((title, p), v) in enumerate(zip(pieces, vecs))
             ])
         added.append({"filename": f.filename, "document_id": did, "n_chunks": len(pieces), "n_words": len(text.split())})
     rag.invalidate(cid)
@@ -191,11 +194,16 @@ def get_run(run_id: str):
         r = c.execute(select(runs).where(runs.c.id == run_id)).mappings().first()
     if not r:
         raise HTTPException(404, "No such run")
-    answers = [
-        {"qnum": l["qnum"], "question": l["question"], "answer": l["response"],
-         "retrieved": json.loads(l["retrieved"] or "[]"), "prompt": l["prompt"]}
-        for l in _logs(run_id) if l["kind"] == "query"
-    ]
+    answers = []
+    for l in _logs(run_id):
+        if l["kind"] != "query":
+            continue
+        checks = json.loads(l["checks"]) if l["checks"] else {}
+        answers.append({
+            "qnum": l["qnum"], "question": l["question"], "answer": l["response"], "search_query": l["search_query"],
+            "retrieved": json.loads(l["retrieved"] or "[]"), "prompt": l["prompt"],
+            "removed": [c for c in checks.get("claims", []) if c.get("status") == "removed"],
+        })
     return {**r, "audit": json.loads(r["audit"]) if r["audit"] else None,
             "answers": sorted(answers, key=lambda a: a["qnum"])}
 
@@ -238,19 +246,22 @@ def admin_runs():
     with engine.connect() as c:
         rs = c.execute(select(runs).order_by(runs.c.created_at.desc())).mappings().all()
         counts = {}
-        for row in c.execute(select(query_logs.c.run_id, query_logs.c.response).where(query_logs.c.kind == "query")).all():
-            n = counts.setdefault(row.run_id, [0, 0])
+        for row in c.execute(select(query_logs.c.run_id, query_logs.c.response, query_logs.c.checks)
+                             .where(query_logs.c.kind == "query")).all():
+            n = counts.setdefault(row.run_id, [0, 0, 0])
             n[0] += 1
             n[1] += row.response != rag.NOT_FOUND
+            claims = (json.loads(row.checks) if row.checks else {}).get("claims", [])
+            n[2] += sum(cl.get("status") == "removed" for cl in claims)
     out = []
     for r in rs:
         audit = json.loads(r["audit"]) if r["audit"] else None
-        logged, answered = counts.get(r["id"], [0, 0])
+        logged, answered, claims_removed = counts.get(r["id"], [0, 0, 0])
         out.append({
             "id": r["id"], "person": r["person"], "collection_id": r["collection_id"], "status": r["status"],
             "started_at": r["created_at"], "finished_at": r["finished_at"], "queries_logged": logged,
-            "answered": answered, "sentences": audit["total"] if audit else None,
-            "flagged": audit["flagged"] if audit else None,
+            "answered": answered, "sentences": audit.get("total") if audit else None,
+            "removed": (audit.get("removed", audit.get("flagged")) or 0) + claims_removed if audit else None,
         })
     return out
 
@@ -261,17 +272,18 @@ def admin_canary():
         rows = c.execute(
             select(query_logs, collections.c.person)
             .join(collections, collections.c.id == query_logs.c.collection_id)
-            .where(query_logs.c.kind == "canary").order_by(query_logs.c.id.desc())
+            .where(query_logs.c.kind.in_(["canary", "clarify"])).order_by(query_logs.c.id.desc())
         ).mappings().all()
-    return [{"id": r["id"], "person": r["person"], "question": r["question"], "answer": r["response"],
-             "retrieved": json.loads(r["retrieved"] or "[]"), "llm_called": r["llm_called"],
-             "asked_at": r["created_at"], "prompt": r["prompt"]} for r in rows]
+    return [{"id": r["id"], "person": r["person"], "kind": r["kind"], "question": r["question"], "answer": r["response"],
+             "search_query": r["search_query"], "retrieved": json.loads(r["retrieved"] or "[]"),
+             "llm_called": r["llm_called"], "asked_at": r["created_at"], "prompt": r["prompt"]} for r in rows]
 
 
 # ---------- canary / free question ----------
 
 class Ask(BaseModel):
     question: str
+    clarification: str | None = None  # the user's reply to a follow-up question
 
 
 @app.post("/api/collections/{cid}/ask", dependencies=[Depends(check_pw)])
@@ -280,7 +292,13 @@ def ask(cid: str, body: Ask):
         col = c.execute(select(collections).where(collections.c.id == cid)).mappings().first()
     if not col:
         raise HTTPException(404, "No such collection")
-    res = rag.answer(cid, col["person"], body.question.strip(), "canary")
+    question = body.question.strip()
+    if body.clarification and body.clarification.strip():
+        question = f"{question} ({body.clarification.strip()})"
+    # One follow-up at most: once the person has clarified, answer whatever they meant.
+    res = rag.answer(cid, col["person"], question, "canary", allow_follow_up=not body.clarification)
+    if res["follow_up"]:
+        return {"question": question, "follow_up": res["follow_up"]}
     return {"question": res["question"], "answer": res["answer"], "retrieved": res["retrieved"]}
 
 
@@ -290,14 +308,20 @@ def canary_logs(cid: str):
         rows = c.execute(
             select(query_logs).where(query_logs.c.collection_id == cid, query_logs.c.kind == "canary").order_by(query_logs.c.id.desc())
         ).mappings().all()
-    return [{**r, "retrieved": json.loads(r["retrieved"] or "[]")} for r in rows]
+    out = []
+    for r in rows:
+        checks = json.loads(r["checks"]) if r["checks"] else {}
+        out.append({"id": r["id"], "question": r["question"], "response": r["response"], "created_at": r["created_at"],
+                    "search_query": r["search_query"], "retrieved": json.loads(r["retrieved"] or "[]"),
+                    "removed": [c for c in checks.get("claims", []) if c.get("status") == "removed"]})
+    return out
 
 
 @app.get("/api/chunks/{chunk_id}")
 def get_chunk(chunk_id: str):
     with engine.connect() as c:
         r = c.execute(
-            select(chunks.c.id, chunks.c.text, chunks.c.ord, documents.c.filename)
+            select(chunks.c.id, chunks.c.text, chunks.c.ord, chunks.c.section, documents.c.filename)
             .join(documents, documents.c.id == chunks.c.document_id)
             .where(chunks.c.id == chunk_id)
         ).mappings().first()

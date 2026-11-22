@@ -17,7 +17,10 @@ if _db.startswith("postgresql://"):
 DATABASE_URL = _db
 
 TOP_K = int(os.getenv("TOP_K") or 6)
-MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY") or 0.30)
+# A chunk is kept only if it clears both: an absolute floor, and standing out from the rest of the
+# corpus for this question (z-score = how many standard deviations above the average chunk's score).
+MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY") or 0.20)
+MIN_Z = float(os.getenv("MIN_Z") or 2.0)
 CHUNK_WORDS = int(os.getenv("CHUNK_WORDS") or 350)
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP") or 60)
 
