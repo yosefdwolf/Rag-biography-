@@ -13,7 +13,8 @@ def client() -> OpenAI:
     if _client is None:
         if not OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is not set")
-        _client = OpenAI(api_key=OPENAI_API_KEY)
+        # A stuck call must fail, not hang a run: the SDK default waits up to 10 minutes per try.
+        _client = OpenAI(api_key=OPENAI_API_KEY, timeout=120, max_retries=2)
     return _client
 
 
@@ -35,6 +36,8 @@ def chat(system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
         kwargs["temperature"] = 0
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    # Caps runaway output (JSON mode can stream whitespace until the limit). Far above any real reply.
+    kwargs["max_completion_tokens"] = 8000
     started = time.monotonic()
     resp = client().chat.completions.create(
         model=CHAT_MODEL,
