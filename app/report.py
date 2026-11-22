@@ -45,7 +45,8 @@ def _claim(c: dict) -> dict:
     """One claim or story sentence, in the same shape whether it came from a new or an older run."""
     if "status" in c:  # verified pipeline
         return {"n": c.get("n"), "text": c.get("text"), "chunk_ids": c.get("chunk_ids", []), "quotes": c.get("quotes", []),
-                "status": c["status"], "reason": c.get("reason"), "verdict": c.get("verdict"), "paragraph": c.get("paragraph")}
+                "status": c["status"], "reason": c.get("reason"), "verdict": c.get("verdict"), "paragraph": c.get("paragraph"),
+                "note": c.get("note"), "original_text": c.get("original_text"), "standalone": c.get("standalone", [])}
     flag = c.get("flag")  # older runs: flagged, not removed
     return {"n": c.get("n"), "text": re.sub(r"\s*\[[^\]]+\]", "", c.get("sentence", "")).strip(), "chunk_ids": c.get("citations", []),
             "quotes": [], "status": "flagged" if flag else "kept",
@@ -228,6 +229,8 @@ def to_markdown(rep: dict) -> str:
         for c in q["claims_kept"]:
             if c["quotes"]:
                 out.append(f"- \"{c['text']}\" ← quote: \"{' / '.join(c['quotes'])}\" [{', '.join(c['chunk_ids'])}]")
+                if c.get("original_text"):
+                    out.append(f"  - trimmed from: ~~\"{c['original_text']}\"~~ ({c.get('note')})")
         for c in q["claims_removed"]:
             out.append(f"- ~~\"{c['text']}\"~~ removed: {c['reason']}")
         out += ["", "<details><summary>Prompt sent</summary>", "", "```text", q["prompt"] or "", "```", "", "</details>", ""]

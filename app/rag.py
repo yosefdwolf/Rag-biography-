@@ -135,11 +135,11 @@ def _load(collection_id: str):
             return _cache[collection_id]
     with engine.connect() as c:
         rows = c.execute(
-            select(chunks.c.id, chunks.c.text, chunks.c.embedding)
+            select(chunks.c.id, chunks.c.text, chunks.c.section, chunks.c.embedding)
             .where(chunks.c.collection_id == collection_id).order_by(chunks.c.id)
         ).all()
     ids = [r.id for r in rows]
-    texts = [r.text for r in rows]
+    texts = [(r.text, r.section or "") for r in rows]
     mat = np.vstack([np.frombuffer(r.embedding, dtype=np.float32) for r in rows]) if rows else np.zeros((0, 1), np.float32)
     with _cache_lock:
         _cache[collection_id] = (ids, texts, mat)
@@ -161,7 +161,7 @@ def retrieve(collection_id: str, query: str, k: int = TOP_K) -> tuple[list[dict]
     for i in np.argsort(-scores)[:k]:
         s, z = float(scores[i]), (float(scores[i]) - mean) / std
         if s >= MIN_SIMILARITY and z >= MIN_Z:
-            hits.append({"chunk_id": ids[i], "score": round(s, 4), "z": round(z, 2), "text": texts[i]})
+            hits.append({"chunk_id": ids[i], "score": round(s, 4), "z": round(z, 2), "text": texts[i][0], "section": texts[i][1]})
     return hits, {"mean": round(mean, 4), "std": round(std, 4)}
 
 
@@ -211,27 +211,70 @@ SENTENCE_STARTERS = {"he", "she", "his", "her", "they", "their", "the", "a", "an
                      "when", "while", "during", "later", "then", "this", "that", "it", "one", "once", "there", "with",
                      "from", "for", "by", "to", "of", "and", "but", "i", "my", "mr", "mrs", "dr"}
 
-JUDGE_SYSTEM = """You check claims against quotes. Each claim comes with exact quotes taken from source documents.
-For each claim decide whether the quotes, read together, state everything the claim says.
-- "supported": every part of the claim is stated in the quotes.
-- "partial": part of the claim is in the quotes, part is not.
-- "unsupported": the quotes don't state the claim.
-Paraphrase is fine. Added details (dates, names, places, numbers, causes, feelings) that are not in the quotes are not.
-Return JSON: {"results": [{"n": 1, "verdict": "supported|partial|unsupported", "missing": "what the quotes don't support, or empty"}]}"""
+def _facts_missing(text: str, quotes: list[str], cited: str, person_words: set[str]) -> str | None:
+    """Numbers and proper names in a claim must appear in the chunks it cites. Returns why not, or None."""
+    cited_words = set(cited.split())
+    numbers = list(dict.fromkeys(x for x in re.findall(r"\d+", " ".join([text, *quotes])) if x not in cited_words))
+    if numbers:
+        return f"number not in the cited chunk: {', '.join(numbers)}"
+    # Group capitalised words into name phrases, skipping the first word of each sentence.
+    phrases, cur = [], []
+    words = text.split()
+    for k, w in enumerate(words):
+        bare = re.sub(r"['’]s$", "", w.strip(".,;:!?\"'()"))
+        starts_sentence = k == 0 or words[k - 1].endswith((".", "!", "?")) and not re.fullmatch(r"(Mr|Mrs|Dr|St|[A-Z])\.", words[k - 1])
+        if re.match(r"^[A-Z][a-z]{2,}", bare) and not starts_sentence and bare.lower() not in SENTENCE_STARTERS:
+            cur.append(bare)
+        else:
+            if cur: phrases.append(cur)
+            cur = []
+        if w.endswith((",", ";", ":", ".", "!", "?", ")")) and cur:
+            phrases.append(cur); cur = []
+    if cur: phrases.append(cur)
+
+    def found(w):
+        n = _norm(w)
+        return not n or n in person_words or any(v in cited_words for v in (n, n.rstrip("s"), n + "s", n + "'s"))
+
+    missing = [" ".join(p) for p in phrases if not any(found(w) for w in p)]
+    return f"name not in the cited chunk: {', '.join(dict.fromkeys(missing))}" if missing else None
 
 
-def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], usage: Usage) -> tuple[list[dict], dict | None]:
+RESTATE_SYSTEM = """You make quotes stand on their own. You get source passages and numbered quotes taken from them.
+For each quote, rewrite it as one self-contained statement that says exactly what the quote says, with every pronoun and vague reference replaced by who or what it refers to in the passage. Read the sentences before the quote to find out.
+- "I", "me", "my" are the writer. If the source title says who wrote it (e.g. an autobiography or "by ..."), use that name; otherwise write "the narrator".
+- "he", "his", "she", "her", "they" are whoever the passage is talking about at that point. Use their name or description from the passage ("Master Thomas", "the writer's mother").
+- Add nothing else and leave nothing out.
+Example: passage "...Master Thomas married his second wife. Her name was Rowena Hamilton." quote "Her name was Rowena Hamilton" -> "Master Thomas's second wife was named Rowena Hamilton."
+Return JSON: {"results": [{"n": 1, "standalone": "..."}]}"""
+
+JUDGE_SYSTEM = """You check claims about one person. Each claim comes with statements taken from the sources, already rewritten to say exactly who they are about.
+For each claim decide whether the statements, read together, state everything the claim says about this person.
+- A statement about someone else is not evidence about the person. "Master Thomas's second wife was Rowena Hamilton" does not support "The person's second wife was Rowena Hamilton". A fact about a relative is evidence only when the statement ties that relative to the person ("the person's mother was Harriet").
+- The claim itself must be about the person, or about someone in relation to the person. A true claim only about someone else ("Colonel Lloyd whipped old Barney") is "unsupported": it is not about the person.
+- Paraphrase is fine. Added details (dates, names, places, numbers, causes, feelings, judgments like "leading", "best known", "remembered") are not.
+Verdicts:
+- "supported": the statements state every part of the claim about this person.
+- "partial": they state part of it. Then also give "supported_part": the claim rewritten to say only what the statements state about this person, in one sentence, adding nothing. Empty if nothing useful is left.
+- "unsupported": they don't state it, or they are about someone else.
+Return JSON: {"results": [{"n": 1, "verdict": "supported|partial|unsupported", "missing": "what is not supported, or whose fact it really is, or empty", "supported_part": ""}]}"""
+
+
+def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], usage: Usage,
+                  titles: dict[str, str] | None = None) -> tuple[list[dict], dict | None]:
     """Each claim is {"text", "chunk_ids", "quotes"}. Returns them with status kept/removed and a reason.
 
     Code checks first (cheap and certain): the cited chunks were retrieved, every quote is really in
     a cited chunk, and every number or proper name in the claim appears in a cited chunk.
-    Then one judge call checks the quotes actually say what the claim says."""
+    Then two model calls. The first rewrites each quote to stand on its own ("Her name was Rowena
+    Hamilton" -> "Master Thomas's second wife was named Rowena Hamilton") without seeing any claim, so it
+    can't bend the quote toward one. The second checks the claim against those statements."""
     person_words = set(_norm(person).split())
     tokens = {i: _norm(t).split() for i, t in chunk_text.items()}
     out = []
     for n, c in enumerate(claims, 1):
         text = ID_IN_TEXT.sub("", " ".join(str(c.get("text") or "").split())).strip()
-        ids = [str(i).strip() for i in (c.get("chunk_ids") or []) if str(i).strip()]
+        ids = list(dict.fromkeys(str(i).strip() for i in (c.get("chunk_ids") or []) if str(i).strip()))
         quotes = [str(q).strip() for q in (c.get("quotes") or []) if str(q).strip()]
         row = {"n": n, "text": text, "chunk_ids": ids, "quotes": quotes, "status": "kept", "reason": None, "verdict": None}
         cited = " ".join(_norm(chunk_text[i]) for i in ids if i in chunk_text)
@@ -262,17 +305,7 @@ def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], u
             if missing:
                 row["reason"] = f"quote not found in the cited chunk: \"{missing[0][:80]}\""
             else:
-                cited_words = set(cited.split())
-                numbers = list(dict.fromkeys(x for x in re.findall(r"\d+", " ".join([text, *quotes])) if x not in cited_words))
-                words = text.split()
-                names = [re.sub(r"['’]s$", "", w.strip(".,;:!?\"'()")) for k, w in enumerate(words)
-                         if k > 0 and re.match(r"^[A-Z][a-z]{2,}", w.strip("\"'(")) and not words[k - 1].endswith((".", "!", "?"))]
-                names = [w for w in names if w.lower() not in SENTENCE_STARTERS and w.lower() not in person_words
-                         and _norm(w) and _norm(w) not in cited]
-                if numbers:
-                    row["reason"] = f"number not in the cited chunk: {', '.join(numbers)}"
-                elif names:
-                    row["reason"] = f"name not in the cited chunk: {', '.join(dict.fromkeys(names))}"
+                row["reason"] = _facts_missing(text, quotes, cited, person_words)
         if row["reason"]:
             row["status"] = "removed"
         out.append(row)
@@ -280,15 +313,38 @@ def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], u
     judge = None
     to_judge = [r for r in out if r["status"] == "kept"]
     if to_judge:
-        user = "\n\n".join(f"{r['n']}. Claim: {r['text']}\n" + "\n".join(f"   Quote: \"{q}\"" for q in r["quotes"]) for r in to_judge)
+        titles = titles or {}
+        used = list(dict.fromkeys(i for r in to_judge for i in r["chunk_ids"]))
+        passages = "\n\n".join(f"[{i}] Source: {titles.get(i) or 'unknown'}\n{chunk_text[i]}" for i in used)
+        qlist = [(r, q) for r in to_judge for q in r["quotes"]]
+        # Which passage each quote is in, so the restater looks in the right place.
+        where = [next((i for i in r["chunk_ids"] if quote_found(q, tokens[i])), r["chunk_ids"][0]) for r, q in qlist]
+        user1 = f"Source passages:\n\n{passages}\n\nQuotes:\n\n" + "\n".join(
+            f"{k}. [{w}] \"{q}\"" for k, ((r, q), w) in enumerate(zip(qlist, where), 1))
+        data1, raw1 = chat_json(RESTATE_SYSTEM, user1, usage)
+        restated = {v.get("n"): str(v.get("standalone") or "").strip() for v in data1.get("results", []) if isinstance(v, dict)}
+        for k, (r, q) in enumerate(qlist, 1):
+            r.setdefault("standalone", []).append(restated.get(k) or q)
+
+        user = f"Person: {person}\n\n" + "\n\n".join(
+            f"{r['n']}. Claim: {r['text']}\n" + "\n".join(f"   Statement: {x}" for x in r["standalone"]) for r in to_judge)
         data, raw = chat_json(JUDGE_SYSTEM, user, usage)
         verdicts = {v.get("n"): v for v in data.get("results", []) if isinstance(v, dict)}
         for r in to_judge:
             v = verdicts.get(r["n"], {})
             r["verdict"] = v.get("verdict") or "unchecked"
-            if r["verdict"] in ("partial", "unsupported"):
-                r["status"], r["reason"] = "removed", f"{r['verdict']}: {v.get('missing') or 'quotes do not state the claim'}"
-        judge = {"prompt": f"SYSTEM:\n{JUDGE_SYSTEM}\n\nUSER:\n{user}", "raw": raw}
+            why = v.get("missing") or "quotes do not state the claim"
+            part = " ".join(str(v.get("supported_part") or "").split())
+            cited = " ".join(_norm(chunk_text[i]) for i in r["chunk_ids"])
+            if r["verdict"] == "partial" and part and not _facts_missing(part, r["quotes"], cited, person_words):
+                # Keep what the quotes do say; log what was cut.
+                r["original_text"], r["text"] = r["text"], part
+                r["note"] = f"trimmed to what the quotes say; cut: {why}"
+            elif r["verdict"] in ("partial", "unsupported", "unchecked"):
+                r["status"], r["reason"] = "removed", f"{r['verdict']}: {why}"
+        judge = {"prompt": f"STEP 1, RESTATE QUOTES\nSYSTEM:\n{RESTATE_SYSTEM}\n\nUSER:\n{user1}\n\n"
+                           f"STEP 2, JUDGE CLAIMS\nSYSTEM:\n{JUDGE_SYSTEM}\n\nUSER:\n{user}",
+                 "raw": f"STEP 1:\n{raw1}\n\nSTEP 2:\n{raw}"}
     return out, judge
 
 
@@ -301,7 +357,8 @@ The question names a person only so you know who it is about. The name is not ev
 Rules:
 - Every claim needs at least one exact quote copied word for word from a snippet (at least 3 words), and the ID of that snippet.
 - Never state a date, name, place or number unless it appears in your quote.
-- Snippets can be about other people. Only use what they say about the person asked about.
+- Snippets can be about other people. Only use what they say about the person asked about. Some snippets are written by the person in the first person: there "I" and "my" are the person, while "he", "his" and "her" are usually someone else. Read the sentences around a quote to be sure whose fact it is.
+- Say only what the quotes say. Don't add your own summary or judgment ("leading figure", "best known", "remembered as").
 - If the snippets don't answer the question, return no claims.
 
 Return JSON: {"claims": [{"text": "one sentence answering part of the question", "chunk_ids": ["id"], "quotes": ["exact words from that snippet"]}]}"""
@@ -339,7 +396,8 @@ def answer(collection_id: str, person: str, question: str, kind: str, run_id=Non
         prompt = f"SYSTEM:\n{ANSWER_SYSTEM}\n\nUSER:\n{user}"
         data, raw = chat_json(ANSWER_SYSTEM, user, usage)
         proposed = [c for c in data.get("claims", []) if isinstance(c, dict)]
-        claims, judge = verify_claims(person, proposed, {h["chunk_id"]: h["text"] for h in hits}, usage)
+        claims, judge = verify_claims(person, proposed, {h["chunk_id"]: h["text"] for h in hits}, usage,
+                                     {h["chunk_id"]: h["section"] for h in hits})
         if judge:
             checks["judge_prompt"], checks["judge_raw"] = judge["prompt"], judge["raw"]
     checks["claims"] = claims
@@ -358,9 +416,14 @@ STORY_SYSTEM = """You write a short biographical story about {person} from verif
 Rules:
 - Use ONLY the facts in the notes. Add nothing: no dates, names, places, numbers, causes or feelings the notes don't state.
 - Every sentence must list the source IDs and copy the exact quotes (from the notes) that prove it.
-- Write flowing prose in rough chronological order, in a few paragraphs. Join related facts, but never invent links between them.
+- Give every sentence the stage of life it belongs to: "origins" (birth, parents, family), "childhood", "youth" (teens, early work, schooling), "adulthood" (career, marriage, main events), "later life", or "legacy" (death, how they are remembered, what they are known for). Within a stage, put sentences in the order things happened. The story is assembled stage by stage, so note order doesn't matter.
+- Write in the third person about {person}, in your own words. Never paste a quote in as a sentence: sources written by the person say "I" and "me", and the story must not.
+- State each fact once. Notes from different questions can repeat the same fact: merge them.
+- Join related facts into flowing prose, but never invent links between them.
 
-Return JSON: {"paragraphs": [{"sentences": [{"text": "...", "chunk_ids": ["id"], "quotes": ["exact quote from the notes"]}]}]}"""
+Return JSON: {"sentences": [{"stage": "origins", "text": "...", "chunk_ids": ["id"], "quotes": ["exact quote from the notes"]}]}"""
+
+STAGES = ["origins", "childhood", "youth", "adulthood", "later life", "legacy"]
 
 
 def write_story(run_id: str, collection_id: str, person: str, results: list[dict]) -> tuple[str, dict]:
@@ -381,12 +444,12 @@ def write_story(run_id: str, collection_id: str, person: str, results: list[dict
     user = "Verified notes:\n\n" + "\n\n".join(lines)
     data, raw = chat_json(system, user, usage)
 
-    flat = []
-    for p_i, para in enumerate(data.get("paragraphs", []) if isinstance(data.get("paragraphs"), list) else []):
-        for s in (para.get("sentences", []) if isinstance(para, dict) else []):
-            if isinstance(s, dict):
-                flat.append((p_i, s))
-    checked, judge = verify_claims(person, [s for _, s in flat], chunk_text, usage)
+    # One paragraph per stage of life, in life order, whatever order the writer returned them in.
+    sents = [x for x in data.get("sentences", []) if isinstance(x, dict)] if isinstance(data.get("sentences"), list) else []
+    stage_of = lambda x: STAGES.index(x.get("stage")) if x.get("stage") in STAGES else STAGES.index("adulthood")
+    flat = sorted(((stage_of(x), x) for x in sents), key=lambda t: t[0])
+    titles = {h["chunk_id"]: h.get("section", "") for r in results for h in r["hits"]}
+    checked, judge = verify_claims(person, [s for _, s in flat], chunk_text, usage, titles)
     paragraphs: dict[int, list[str]] = {}
     for (p_i, _), c in zip(flat, checked):
         c["paragraph"] = p_i

@@ -181,7 +181,7 @@
             <p class="sub-label" style="margin-top:0">Answer</p>
             <p class="answer-text${q.outcome === 'answered' ? '' : ' nf'}">${q.outcome === 'answered' ? withChips(q.answer) : 'Not in the sources.'}</p>
             ${q.claims_kept.some((c) => c.quotes.length) ? `<p class="sub-label">Proof for each claim</p><ul class="proofs">${q.claims_kept.map((c) =>
-              `<li>${esc(c.text)}<span class="quote">“${esc(c.quotes.join(' … '))}”</span>${c.chunk_ids.map((x) => chip(x, c.quotes[0])).join(' ')}</li>`).join('')}</ul>` : ''}
+              `<li>${esc(c.text)}${c.original_text ? `<span class="why">Trimmed from: <s>${esc(c.original_text)}</s> (${esc(c.note || '')})</span>` : ''}<span class="quote">“${esc(c.quotes.join(' … '))}”</span>${(c.standalone || []).length ? `<span class="why">Read in context as: ${esc(c.standalone.join(' / '))}</span>` : ''}${c.chunk_ids.map((x) => chip(x, c.quotes[0])).join(' ')}</li>`).join('')}</ul>` : ''}
             ${q.claims_removed.length ? `<p class="sub-label">Removed</p><ul class="removed">${q.claims_removed.map((c) =>
               `<li><s>${esc(c.text)}</s><span class="why">${esc(c.reason)}</span></li>`).join('')}</ul>` : ''}
             <p class="sub-label">Retrieved chunks</p>
