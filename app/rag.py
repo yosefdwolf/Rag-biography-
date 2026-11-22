@@ -251,13 +251,15 @@ Return JSON: {"results": [{"n": 1, "standalone": "..."}]}"""
 JUDGE_SYSTEM = """You check claims about one person. Each claim comes with statements taken from the sources, already rewritten to say exactly who they are about.
 For each claim decide whether the statements, read together, state everything the claim says about this person.
 - A statement about someone else is not evidence about the person. "Master Thomas's second wife was Rowena Hamilton" does not support "The person's second wife was Rowena Hamilton". A fact about a relative is evidence only when the statement ties that relative to the person ("the person's mother was Harriet").
+- Judge facts, not the choice of example. Questions like "the hardest thing" or "a funny story" ask for an example, and sources rarely use those words. If the only unsupported part of a claim is a label like that ("the hardest thing he went through was..."), the verdict is "partial", and "supported_part" is the same fact without the label.
 - The claim itself must be about the person, or about someone in relation to the person. A true claim only about someone else ("Colonel Lloyd whipped old Barney") is "unsupported": it is not about the person.
 - Paraphrase is fine. Added details (dates, names, places, numbers, causes, feelings, judgments like "leading", "best known", "remembered") are not.
 Verdicts:
 - "supported": the statements state every part of the claim about this person.
 - "partial": they state part of it. Then also give "supported_part": the claim rewritten to say only what the statements state about this person, in one sentence, adding nothing. Empty if nothing useful is left.
 - "unsupported": they don't state it, or they are about someone else.
-Return JSON: {"results": [{"n": 1, "verdict": "supported|partial|unsupported", "missing": "what is not supported, or whose fact it really is, or empty", "supported_part": ""}]}"""
+Before the verdict, answer "about_person" for each claim: true only if the claim says something about this person specifically (what they did, what happened to them, who they knew, what they were like). A general statement about a group, a place, an era or slavery in general is false, even if true and even if it affects the person.
+Return JSON: {"results": [{"n": 1, "about_person": true, "verdict": "supported|partial|unsupported", "missing": "what is not supported, or whose fact it really is, or empty", "supported_part": ""}]}"""
 
 
 def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], usage: Usage,
@@ -277,14 +279,14 @@ def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], u
         ids = list(dict.fromkeys(str(i).strip() for i in (c.get("chunk_ids") or []) if str(i).strip()))
         quotes = [str(q).strip() for q in (c.get("quotes") or []) if str(q).strip()]
         row = {"n": n, "text": text, "chunk_ids": ids, "quotes": quotes, "status": "kept", "reason": None, "verdict": None}
-        cited = " ".join(_norm(chunk_text[i]) for i in ids if i in chunk_text)
+        # An ID that wasn't retrieved (often a mistyped one) proves nothing. Drop it: the quote search
+        # below finds the chunk the quote really came from, and only retrieved chunks count.
         bad_ids = [i for i in ids if i not in chunk_text]
+        if bad_ids:
+            ids = [i for i in ids if i in chunk_text]
+            row["note"] = f"ignored citation(s) to chunks that weren't retrieved: {', '.join(bad_ids)}"
         if not text:
             row["reason"] = "empty claim"
-        elif not ids:
-            row["reason"] = "no chunk cited"
-        elif bad_ids:
-            row["reason"] = f"cites chunk(s) that weren't retrieved: {', '.join(bad_ids)}"
         elif not quotes:
             row["reason"] = "no supporting quote"
         else:
@@ -298,6 +300,7 @@ def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], u
                 if elsewhere:
                     ids.append(elsewhere)
                     row["note"] = f"quote was in {elsewhere}, not the chunk cited; citation corrected"
+                    if bad_ids: row["note"] += f" (ignored {', '.join(bad_ids)})"
                 else:
                     missing.append(q)
             row["chunk_ids"] = ids
@@ -334,6 +337,9 @@ def verify_claims(person: str, claims: list[dict], chunk_text: dict[str, str], u
             v = verdicts.get(r["n"], {})
             r["verdict"] = v.get("verdict") or "unchecked"
             why = v.get("missing") or "quotes do not state the claim"
+            if v.get("about_person") is False:
+                r["status"], r["reason"] = "removed", f"not about {person}: {why if v.get('missing') else 'a general statement, not a fact about the person'}"
+                continue
             part = " ".join(str(v.get("supported_part") or "").split())
             cited = " ".join(_norm(chunk_text[i]) for i in r["chunk_ids"])
             if r["verdict"] == "partial" and part and not _facts_missing(part, r["quotes"], cited, person_words):
@@ -359,7 +365,10 @@ Rules:
 - Never state a date, name, place or number unless it appears in your quote.
 - Snippets can be about other people. Only use what they say about the person asked about. Some snippets are written by the person in the first person: there "I" and "my" are the person, while "he", "his" and "her" are usually someone else. Read the sentences around a quote to be sure whose fact it is.
 - Say only what the quotes say. Don't add your own summary or judgment ("leading figure", "best known", "remembered as").
+- Some questions ask you to pick an example: the hardest time, a funny story, a scary moment, a rival. Picking the passage that best fits is your job, and the sources will rarely use the question's word ("hardest", "funny"). So pick the best fit and state its facts plainly ("Mr. Covey whipped him until his back bled"), without the question's label ("The hardest thing was..."). Only return no claims if no snippet fits at all.
 - If the snippets don't answer the question, return no claims.
+
+Write each claim in the third person, in your own words, about the person. Sources written by the person say "I"; your claims say "he" or "she" or the name.
 
 Return JSON: {"claims": [{"text": "one sentence answering part of the question", "chunk_ids": ["id"], "quotes": ["exact words from that snippet"]}]}"""
 
