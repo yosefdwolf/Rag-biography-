@@ -2,246 +2,186 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Biography RAG</title>
-<style>
-  :root {
-    --bg: #faf8f4; --panel: #ffffff; --text: #1f1d1a; --muted: #6b665e; --line: #e4dfd6;
-    --accent: #8a4b1f; --accent-soft: #f3e7dc; --bad: #a3261a; --bad-soft: #fbe6e3; --ok: #2f6b3a;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #171614; --panel: #201f1c; --text: #ece8e1; --muted: #a39d93; --line: #35322d;
-      --accent: #e0a070; --accent-soft: #3a2a1e; --bad: #f08a7e; --bad-soft: #3d1f1b; --ok: #8fcf98;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 Georgia, "Iowan Old Style", serif; }
-  main { max-width: 920px; margin: 0 auto; padding: 32px 16px 80px; }
-  h1 { font-size: 2rem; margin: 0 0 4px; }
-  h2 { font-size: 1.25rem; margin: 0 0 12px; }
-  .sub { color: var(--muted); margin: 0 0 28px; font-family: system-ui, sans-serif; font-size: .9rem; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
-  .ui, button, input, select, table { font-family: system-ui, sans-serif; font-size: .92rem; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  input[type=text], input[type=password], select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; flex: 1 1 200px; }
-  button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--panel); cursor: pointer; }
-  button.secondary { background: transparent; color: var(--accent); }
-  button:disabled { opacity: .5; cursor: default; }
-  .muted { color: var(--muted); }
-  .story p { margin: 0 0 1em; }
-  .cite { font-family: system-ui, sans-serif; font-size: .7rem; background: var(--accent-soft); color: var(--accent); border-radius: 4px; padding: 1px 5px; cursor: pointer; white-space: nowrap; }
-  .flagged { background: var(--bad-soft); outline: 1px solid var(--bad); border-radius: 3px; }
-  table { width: 100%; border-collapse: collapse; }
-  td, th { border-top: 1px solid var(--line); padding: 8px 6px; vertical-align: top; text-align: left; }
-  th { color: var(--muted); font-weight: 500; }
-  .nf { color: var(--muted); font-style: italic; }
-  .bad { color: var(--bad); } .ok { color: var(--ok); }
-  details summary { cursor: pointer; color: var(--accent); }
-  pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font-size: .8rem; max-height: 360px; overflow: auto; }
-  #chunk { position: fixed; right: 16px; bottom: 16px; width: min(460px, calc(100vw - 32px)); max-height: 50vh; overflow: auto; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.2); display: none; }
-  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 10px; }
-  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
-  .tablewrap { overflow-x: auto; }
-</style>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='4' width='18' height='24' rx='3' fill='%233f51b5'/%3E%3Crect x='9' y='9' width='10' height='2' rx='1' fill='white'/%3E%3Crect x='9' y='14' width='10' height='2' rx='1' fill='white'/%3E%3Ccircle cx='23' cy='22' r='6' fill='white' stroke='%233f51b5' stroke-width='2.5'/%3E%3Cpath d='M27 26l3 3' stroke='%233f51b5' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<script>
+  // Password already saved on this device? Hide the gate before first paint; app.js re-checks it quietly.
+  try { if (localStorage.getItem('rag-password')) document.documentElement.classList.add('known-word'); } catch {}
+</script>
 </head>
 <body>
-<main>
-  <h1>Biography RAG</h1>
-  <p class="sub">Upload pages about one person. Every sentence of the story is built only from retrieved snippets and cites the chunk it came from.</p>
 
-  <section class="ui" id="pwbox" style="display:none">
-    <div class="row"><input type="password" id="pw" placeholder="App password"><button onclick="savePw()">Save</button></div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Biography RAG</span>
+    </a>
+    <div class="top-actions" id="topActions" hidden>
+      <label class="person-picker">
+        <span class="sr-only">Person</span>
+        <select id="colSel"></select>
+      </label>
+      <button class="btn ghost" id="newPersonBtn" type="button">+ New person</button>
+    </div>
+  </div>
+</header>
+
+<!-- The password comes first. Once it's right, this card goes away on this device. -->
+<section id="gate" class="gate">
+  <div class="gate-card">
+    <div class="gate-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></svg>
+    </div>
+    <h1>Enter the password</h1>
+    <p class="muted">Uploading sources and generating stories uses paid AI calls, so this site is password-protected.</p>
+    <form id="gateForm" novalidate>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input type="password" id="password" autocomplete="current-password" required aria-describedby="passwordError">
+      </label>
+      <button class="btn primary block" type="submit" id="unlockBtn">Unlock</button>
+    </form>
+    <p class="error" id="passwordError" role="alert" hidden></p>
+  </div>
+</section>
+
+<main id="app" hidden>
+
+  <!-- No person yet -->
+  <section id="welcome" class="welcome" hidden>
+    <h1>Tell a life story from its sources</h1>
+    <p class="muted lead">Upload pages about one person. The app chunks and embeds them, asks 20 questions, and writes a story where every sentence cites the chunk it came from.</p>
+    <button class="btn primary lg" type="button" data-new-person>Add a person</button>
+    <ol class="how">
+      <li><strong>Upload</strong><span>PDF, HTML, TXT or Markdown pages about one person.</span></li>
+      <li><strong>Retrieve</strong><span>20 questions each pull the closest chunks from the store.</span></li>
+      <li><strong>Write</strong><span>The story uses only those snippets, and each sentence is traced and audited.</span></li>
+    </ol>
   </section>
 
-  <section>
-    <h2>1. Person</h2>
-    <div class="row ui">
-      <select id="colSel" onchange="selectCol(this.value)"></select>
-      <input type="text" id="newPerson" placeholder="New person, e.g. Benjamin Franklin">
-      <button onclick="createCol()">Create</button>
+  <!-- A person is selected -->
+  <section id="person" hidden>
+    <div class="hero">
+      <div>
+        <p class="eyebrow">Biography</p>
+        <h1 id="personName"></h1>
+        <div class="stats" id="stats"></div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn ghost" type="button" id="goSources">Add sources</button>
+        <button class="btn primary" type="button" id="runBtn">Generate story</button>
+      </div>
     </div>
-    <p class="ui muted" id="colInfo"></p>
-  </section>
 
-  <section>
-    <h2>2. Sources</h2>
-    <div class="row ui">
-      <input type="file" id="files" multiple accept=".txt,.pdf,.html,.htm,.md">
-      <button id="upBtn" onclick="upload()">Upload &amp; embed</button>
+    <div class="progress-card" id="progressCard" hidden>
+      <ol class="steps" id="steps">
+        <li data-step="0"><span class="dot"></span><div><strong>Retrieve &amp; answer</strong><small id="stepQ">0 / 20 questions</small></div></li>
+        <li data-step="1"><span class="dot"></span><div><strong>Write the story</strong><small>Only from cited answers</small></div></li>
+        <li data-step="2"><span class="dot"></span><div><strong>Audit</strong><small>Trace every sentence</small></div></li>
+      </ol>
+      <div class="bar"><div id="bar"></div></div>
     </div>
-    <p class="ui muted" id="upStatus"></p>
-    <div class="tablewrap"><table class="ui" id="docTable"></table></div>
-  </section>
 
-  <section>
-    <h2>3. Run the 20 queries and write the story</h2>
-    <div class="row ui">
-      <button id="runBtn" onclick="startRun()">Run</button>
-      <select id="runSel" onchange="loadRun(this.value)"></select>
-      <a id="logLink" class="ui" href="#" style="display:none">Download logs (JSON)</a>
-    </div>
-    <div class="bar"><div id="prog"></div></div>
-    <p class="ui muted" id="runStatus"></p>
-    <div id="storyBox" class="story"></div>
-    <div id="auditBox"></div>
-    <div id="answersBox"></div>
-  </section>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="story" aria-selected="true">Story</button>
+      <button role="tab" data-tab="answers">Answers <span class="count" id="answersCount"></span></button>
+      <button role="tab" data-tab="audit">Audit <span class="count" id="auditCount"></span></button>
+      <button role="tab" data-tab="sources">Sources <span class="count" id="sourcesCount"></span></button>
+      <button role="tab" data-tab="canary">Canary</button>
+    </nav>
 
-  <section>
-    <h2>4. Canary / ask anything</h2>
-    <p class="ui muted">Ask something true about the person that is not in the corpus. The right answer is "NOT IN THE SOURCES".</p>
-    <div class="row ui">
-      <input type="text" id="canaryQ" placeholder="e.g. What was the name of Franklin's dog?">
-      <button onclick="ask()">Ask</button>
-    </div>
-    <div id="canaryOut" class="ui"></div>
+    <!-- Story -->
+    <section class="panel" data-panel="story">
+      <div class="panel-head">
+        <select id="runSel" class="run-select" aria-label="Run"></select>
+        <div class="panel-tools">
+          <label class="toggle"><input type="checkbox" id="highlight" checked><span>Highlight flagged</span></label>
+          <a class="btn ghost sm" id="logLink" href="#" download hidden>Download logs</a>
+        </div>
+      </div>
+      <article class="story" id="story"></article>
+    </section>
+
+    <!-- Answers -->
+    <section class="panel" data-panel="answers" hidden>
+      <p class="panel-intro muted">Each question is retrieved on its own. The model sees only the chunks listed, and says <em>not in the sources</em> when they don't answer it.</p>
+      <div class="answers" id="answers"></div>
+    </section>
+
+    <!-- Audit -->
+    <section class="panel" data-panel="audit" hidden>
+      <div class="tiles" id="tiles"></div>
+      <p class="panel-intro muted">Each story sentence is checked three ways: it has a citation, the cited chunk was actually retrieved in this run, and a separate model call confirms the chunk states the claim. Anything that fails is flagged as possible training-data content.</p>
+      <div class="table-wrap"><table class="table" id="auditTable"></table></div>
+    </section>
+
+    <!-- Sources -->
+    <section class="panel" data-panel="sources" hidden>
+      <label class="dropzone" id="drop">
+        <input type="file" id="files" multiple accept=".txt,.pdf,.html,.htm,.md">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <strong>Drop files here or click to choose</strong>
+        <span class="muted">PDF, HTML, TXT or Markdown · as many as you like</span>
+      </label>
+      <div class="queue" id="queue" hidden>
+        <ul id="queueList"></ul>
+        <div class="queue-actions">
+          <button class="btn ghost sm" type="button" id="clearQueue">Clear</button>
+          <button class="btn primary" type="button" id="upBtn">Chunk &amp; embed</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table class="table" id="docTable"></table></div>
+      <p class="fine muted" id="settings"></p>
+    </section>
+
+    <!-- Canary -->
+    <section class="panel" data-panel="canary" hidden>
+      <p class="panel-intro muted">Ask something true about this person that is <strong>not</strong> in the uploaded sources. The right answer is <em>not in the sources</em>. Any question goes through the same retrieval and prompt as the 20.</p>
+      <form class="ask" id="askForm">
+        <input type="text" id="canaryQ" placeholder="Ask a question about this person" autocomplete="off">
+        <button class="btn primary" type="submit" id="askBtn">Ask</button>
+      </form>
+      <div class="canary-list" id="canaryList"></div>
+    </section>
   </section>
 </main>
 
-<div id="chunk" class="ui"></div>
+<!-- Chunk viewer -->
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div>
+      <p class="eyebrow" id="drawerMeta"></p>
+      <h2 id="drawerTitle"></h2>
+    </div>
+    <button class="icon-btn" type="button" id="drawerClose" aria-label="Close">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
 
-<script>
-let cfg = {}, col = null, pollTimer = null;
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-function pw() { try { return localStorage.getItem("ragpw") || ""; } catch { return ""; } }
-function savePw() { try { localStorage.setItem("ragpw", $("pw").value); } catch {} }
+<dialog id="personDialog">
+  <form method="dialog" id="personForm">
+    <h2>New person</h2>
+    <p class="muted">Each person gets their own store of sources and runs.</p>
+    <label class="field">
+      <span class="field-label">Full name</span>
+      <input type="text" id="personInput" placeholder="Benjamin Franklin" required autocomplete="off">
+    </label>
+    <div class="dialog-actions">
+      <button class="btn ghost" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="personCreate">Create</button>
+    </div>
+  </form>
+</dialog>
 
-async function api(path, opts = {}) {
-  opts.headers = Object.assign({"X-App-Password": pw()}, opts.headers || {});
-  const r = await fetch(path, opts);
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || r.statusText);
-  return body;
-}
+<div class="toasts" id="toasts" aria-live="polite"></div>
 
-function citeHtml(text) {
-  return esc(text).replace(/\[([A-Za-z0-9_\-]+(?:\s*,\s*[A-Za-z0-9_\-]+)*)\]/g, (_, ids) =>
-    ids.split(",").map(i => i.trim()).map(i => `<span class="cite" onclick="showChunk('${i}')">${i}</span>`).join(" "));
-}
-
-async function showChunk(id) {
-  const box = $("chunk");
-  box.style.display = "block";
-  box.innerHTML = "Loading…";
-  try {
-    const c = await api(`/api/chunks/${id}`);
-    box.innerHTML = `<div class="row" style="justify-content:space-between"><strong>${esc(c.id)}</strong><button class="secondary" onclick="$('chunk').style.display='none'">Close</button></div>
-      <p class="muted">${esc(c.filename)} · chunk ${c.ord}</p><p style="font-family:Georgia,serif">${esc(c.text)}</p>`;
-  } catch (e) { box.textContent = e.message; }
-}
-
-async function loadCols(selectId) {
-  const cols = await api("/api/collections");
-  $("colSel").innerHTML = cols.length
-    ? cols.map(c => `<option value="${c.id}">${esc(c.person)} (${c.n_chunks} chunks)</option>`).join("")
-    : `<option value="">No people yet</option>`;
-  const id = selectId || (cols[0] && cols[0].id);
-  if (id) { $("colSel").value = id; await selectCol(id); }
-}
-
-async function createCol() {
-  const person = $("newPerson").value.trim();
-  if (!person) return;
-  try { const c = await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({person})}); $("newPerson").value = ""; await loadCols(c.id); }
-  catch (e) { alert(e.message); }
-}
-
-async function selectCol(id) {
-  if (!id) return;
-  col = await api(`/api/collections/${id}`);
-  $("colInfo").textContent = `${col.documents.length} documents · ${col.n_words.toLocaleString()} words · ~${col.est_pages} pages · ${col.n_chunks} chunks · embed ${cfg.embed_model}, chat ${cfg.chat_model}, top-${cfg.top_k}, min similarity ${cfg.min_similarity}`;
-  $("docTable").innerHTML = col.documents.length
-    ? `<tr><th>File</th><th>Words</th><th>Chunks</th><th>Doc ID</th></tr>` + col.documents.map(d => `<tr><td>${esc(d.filename)}</td><td>${d.n_words.toLocaleString()}</td><td>${d.n_chunks}</td><td>${d.id}</td></tr>`).join("")
-    : "";
-  $("runSel").innerHTML = col.runs.length
-    ? col.runs.map(r => `<option value="${r.id}">Run ${r.id} · ${r.status} · ${r.created_at}</option>`).join("")
-    : `<option value="">No runs yet</option>`;
-  ["storyBox", "auditBox", "answersBox", "runStatus", "canaryOut"].forEach(i => $(i).innerHTML = "");
-  $("logLink").style.display = "none"; $("prog").style.width = "0";
-  if (col.runs.length) loadRun(col.runs[0].id);
-}
-
-async function upload() {
-  const files = $("files").files;
-  if (!col || !files.length) return;
-  const fd = new FormData();
-  for (const f of files) fd.append("files", f);
-  $("upBtn").disabled = true; $("upStatus").textContent = `Chunking and embedding ${files.length} file(s)…`;
-  try {
-    const r = await api(`/api/collections/${col.id}/upload`, {method: "POST", body: fd});
-    $("upStatus").textContent = r.added.map(a => `${a.filename}: ${a.n_chunks} chunks`).join(" · ");
-    $("files").value = ""; await loadCols(col.id);
-  } catch (e) { $("upStatus").textContent = "Error: " + e.message; }
-  $("upBtn").disabled = false;
-}
-
-async function startRun() {
-  if (!col) return;
-  $("runBtn").disabled = true;
-  try { const r = await api(`/api/collections/${col.id}/runs`, {method: "POST"}); await selectCol(col.id); loadRun(r.run_id); }
-  catch (e) { alert(e.message); }
-  $("runBtn").disabled = false;
-}
-
-async function loadRun(id) {
-  clearTimeout(pollTimer);
-  if (!id) return;
-  const r = await api(`/api/runs/${id}`);
-  $("runSel").value = id;
-  $("prog").style.width = `${Math.round((r.progress || 0) / 22 * 100)}%`;
-  const stage = r.progress < 20 ? `answering questions (${r.progress}/20)` : r.progress === 20 ? "writing the story" : r.progress === 21 ? "auditing the story" : "done";
-  $("runStatus").textContent = r.status === "error" ? `Error: ${r.error}` : r.status === "running" ? `Running: ${stage}…` : `Run ${r.id} finished ${r.created_at}`;
-  $("logLink").href = `/api/runs/${id}/logs.json`; $("logLink").style.display = "";
-
-  const flagged = new Set((r.audit?.sentences || []).filter(s => s.flag).map(s => s.sentence));
-  $("storyBox").innerHTML = r.story
-    ? `<h2 style="margin-top:20px">The story</h2>` + r.story.split(/\n\s*\n/).map(p => {
-        let html = citeHtml(p);
-        flagged.forEach(s => { const h = citeHtml(s); if (html.includes(h)) html = html.replace(h, `<span class="flagged" title="Flagged by audit">${h}</span>`); });
-        return `<p>${html}</p>`;
-      }).join("")
-    : "";
-
-  if (r.audit) {
-    const a = r.audit;
-    $("auditBox").innerHTML = `<h2 style="margin-top:24px">Audit</h2>
-      <p class="ui">${a.total} sentences, <span class="${a.flagged ? "bad" : "ok"}">${a.flagged} flagged</span>. Questions answered "not in the sources": ${a.questions_not_in_sources.length ? a.questions_not_in_sources.join(", ") : "none"}.</p>
-      <details class="ui"><summary>Sentence-by-sentence trace</summary><div class="tablewrap"><table>
-        <tr><th>#</th><th>Sentence</th><th>Chunks</th><th>Check</th></tr>
-        ${a.sentences.map(s => `<tr><td>${s.n}</td><td>${esc(s.sentence.replace(/\s*\[[^\]]+\]/g, ""))}</td><td>${s.citations.map(c => `<span class="cite" onclick="showChunk('${c}')">${c}</span>`).join(" ") || "–"}</td>
-          <td class="${s.flag ? "bad" : "ok"}">${s.flag ? esc(s.flag) + (s.outside_claims ? `<br><span class="muted">${esc(s.outside_claims)}</span>` : "") : esc(s.verdict || "ok")}</td></tr>`).join("")}
-      </table></div></details>`;
-  } else $("auditBox").innerHTML = "";
-
-  $("answersBox").innerHTML = r.answers.length ? `<h2 style="margin-top:24px">The 20 answers</h2><div class="ui">` + r.answers.map(x => `
-    <details style="margin-bottom:10px"><summary>${x.qnum}. ${esc(x.question)}</summary>
-      <p class="${x.answer === "NOT IN THE SOURCES" ? "nf" : ""}" style="font-family:Georgia,serif">${citeHtml(x.answer)}</p>
-      <p class="muted">Retrieved: ${x.retrieved.map(h => `<span class="cite" onclick="showChunk('${h.chunk_id}')">${h.chunk_id}</span> ${h.score}`).join(" · ") || "nothing above threshold"}</p>
-      <details><summary>Prompt sent</summary><pre>${esc(x.prompt)}</pre></details>
-    </details>`).join("") + `</div>` : "";
-
-  if (r.status === "running") pollTimer = setTimeout(() => loadRun(id), 2000);
-  else if (col) { const c = await api(`/api/collections/${col.id}`); $("runSel").innerHTML = c.runs.map(x => `<option value="${x.id}">Run ${x.id} · ${x.status} · ${x.created_at}</option>`).join(""); $("runSel").value = id; }
-}
-
-async function ask() {
-  const q = $("canaryQ").value.trim();
-  if (!col || !q) return;
-  $("canaryOut").innerHTML = "<p class='muted'>Asking…</p>";
-  try {
-    const r = await api(`/api/collections/${col.id}/ask`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q})});
-    $("canaryOut").innerHTML = `<p class="${r.answer === "NOT IN THE SOURCES" ? "ok" : ""}" style="font-family:Georgia,serif">${citeHtml(r.answer)}</p>
-      <p class="muted">Retrieved: ${r.retrieved.map(h => `<span class="cite" onclick="showChunk('${h.chunk_id}')">${h.chunk_id}</span> ${h.score}`).join(" · ") || "nothing above threshold"}</p>`;
-  } catch (e) { $("canaryOut").textContent = "Error: " + e.message; }
-}
-
-(async () => {
-  cfg = await api("/api/config");
-  if (cfg.password_required) { $("pwbox").style.display = ""; $("pw").value = pw(); }
-  await loadCols();
-})();
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>

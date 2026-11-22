@@ -1,9 +1,11 @@
+import hmac
 import json
 from pathlib import Path
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select
 
@@ -14,6 +16,7 @@ from .ingest import chunk_text, extract_text
 
 app = FastAPI(title="Biography RAG")
 STATIC = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.on_event("startup")
@@ -21,9 +24,25 @@ def _startup():
     init_db()
 
 
-def check_pw(x_app_password: str = Header(default="")):
-    if APP_PASSWORD and x_app_password != APP_PASSWORD:
-        raise HTTPException(401, "Wrong or missing app password")
+def password_problem(given: str | None) -> tuple[int, str, str] | None:
+    """Anything that spends OpenAI credits needs APP_PASSWORD. Unset means refuse (fail closed)."""
+    if not APP_PASSWORD:
+        return 503, "no_app_password", "The server has no APP_PASSWORD set, so it won't spend credits."
+    if not given or not hmac.compare_digest(given.encode(), APP_PASSWORD.encode()):
+        return 401, "wrong_password", "Wrong password."
+    return None
+
+
+def check_pw(x_app_password: str | None = Header(default=None)):
+    if problem := password_problem(x_app_password):
+        status, reason, message = problem
+        raise HTTPException(status, {"reason": reason, "message": message})
+
+
+@app.post("/api/unlock", status_code=204, dependencies=[Depends(check_pw)])
+def unlock():
+    """Checks the password on its own, so the page can open the rest of the app."""
+    return Response(status_code=204)
 
 
 @app.get("/")
@@ -35,7 +54,7 @@ def index():
 def config():
     return {
         "chat_model": CHAT_MODEL, "embed_model": EMBED_MODEL, "top_k": TOP_K,
-        "min_similarity": MIN_SIMILARITY, "password_required": bool(APP_PASSWORD),
+        "min_similarity": MIN_SIMILARITY, "password_set": bool(APP_PASSWORD),
         "questions": rag.QUESTIONS,
     }
 

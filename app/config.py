@@ -21,5 +21,5 @@ MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY") or 0.30)
 CHUNK_WORDS = int(os.getenv("CHUNK_WORDS") or 350)
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP") or 60)
 
-# Optional: when set, uploads and runs need this password (stops strangers spending your OpenAI credits).
+# Required: uploads, runs and questions need this password. Unset = they are refused.
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
