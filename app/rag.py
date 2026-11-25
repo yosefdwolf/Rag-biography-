@@ -64,14 +64,19 @@ class Usage:
         return {"tokens_in": self.tokens_in, "tokens_out": self.tokens_out, "latency_ms": self.latency_ms}
 
 
-def chat_json(system: str, user: str, usage: Usage) -> tuple[dict, str]:
-    raw, meta = llm.chat(system, user, json_mode=True)
-    usage.add(meta)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        data = {}
-    return (data if isinstance(data, dict) else {}), raw
+def chat_json(system: str, user: str, usage: Usage, schema: dict | None = None) -> tuple[dict, str]:
+    """A JSON reply as a dict. An unreadable reply is retried once; if it is still unreadable the
+    dict is empty and the raw text is returned for the log."""
+    for attempt in range(2):
+        raw, meta = llm.chat(system, user, json_mode=True, schema=schema)
+        usage.add(meta)
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data, raw
+        except json.JSONDecodeError:
+            pass
+    return {}, raw
 
 
 def log(collection_id, kind, question, retrieved, prompt, response, usage: Usage, llm_called, run_id=None, qnum=None,
@@ -244,6 +249,7 @@ RESTATE_SYSTEM = """You make quotes stand on their own. You get source passages 
 For each quote, rewrite it as one self-contained statement that says exactly what the quote says, with every pronoun and vague reference replaced by who or what it refers to in the passage. Read the sentences before the quote to find out.
 - "I", "me", "my" are the writer. If the source title says who wrote it (e.g. an autobiography or "by ..."), use that name; otherwise write "the narrator".
 - "he", "his", "she", "her", "they" are whoever the passage is talking about at that point. Use their name or description from the passage ("Master Thomas", "the writer's mother").
+- Name who did every action, including actions in "having ...", "-ing" and "after ..." phrases. Such a phrase can belong to someone other than the subject of the sentence: in "Having lied to the king, his brother was banished by him", the one who lied is the brother, not the king. Write it out with every doer named: "The brother lied to the king; the king then banished the brother."
 - Add nothing else and leave nothing out.
 Example: passage "...Master Thomas married his second wife. Her name was Rowena Hamilton." quote "Her name was Rowena Hamilton" -> "Master Thomas's second wife was named Rowena Hamilton."
 Return JSON: {"results": [{"n": 1, "standalone": "..."}]}"""
@@ -420,19 +426,26 @@ def answer(collection_id: str, person: str, question: str, kind: str, run_id=Non
 
 # ---------- 5. story ----------
 
-STORY_SYSTEM = """You write a short biographical story about {person} from verified notes. Each note is a fact with the exact quote and source ID that prove it.
+STORY_SYSTEM = """You write a short biographical story about {person} from numbered, verified notes. Each note is a fact with the quote that proves it.
 
 Rules:
 - Use ONLY the facts in the notes. Add nothing: no dates, names, places, numbers, causes or feelings the notes don't state.
-- Every sentence must list the source IDs and copy the exact quotes (from the notes) that prove it.
+- For every sentence, list the numbers of the notes it uses. Don't copy quotes or source IDs: they are attached from the notes you list.
 - Give every sentence the stage of life it belongs to: "origins" (birth, parents, family), "childhood", "youth" (teens, early work, schooling), "adulthood" (career, marriage, main events), "later life", or "legacy" (death, how they are remembered, what they are known for). Within a stage, put sentences in the order things happened. The story is assembled stage by stage, so note order doesn't matter.
 - Write in the third person about {person}, in your own words. Never paste a quote in as a sentence: sources written by the person say "I" and "me", and the story must not.
 - State each fact once. Notes from different questions can repeat the same fact: merge them.
 - Join related facts into flowing prose, but never invent links between them.
 
-Return JSON: {"sentences": [{"stage": "origins", "text": "...", "chunk_ids": ["id"], "quotes": ["exact quote from the notes"]}]}"""
+Return JSON: {"sentences": [{"stage": "origins", "text": "...", "notes": [1, 4]}]}"""
 
 STAGES = ["origins", "childhood", "youth", "adulthood", "later life", "legacy"]
+STORY_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["sentences"],
+    "properties": {"sentences": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["stage", "text", "notes"],
+        "properties": {"stage": {"type": "string", "enum": STAGES}, "text": {"type": "string"},
+                       "notes": {"type": "array", "items": {"type": "integer"}}}}}},
+}
 
 
 def write_story(run_id: str, collection_id: str, person: str, results: list[dict]) -> tuple[str, dict]:
@@ -447,14 +460,27 @@ def write_story(run_id: str, collection_id: str, person: str, results: list[dict
             story, usage, False, run_id)
         return story, audit
 
-    lines = [f"Q{q}: {c['text']}\n   source: {', '.join(c['chunk_ids'])}\n" + "\n".join(f"   quote: \"{x}\"" for x in c["quotes"])
-             for q, c in notes]
+    lines = [f"{n}. (Q{q}) {c['text']}\n   quote: \"{' … '.join(c['quotes'])}\"" for n, (q, c) in enumerate(notes, 1)]
     system = STORY_SYSTEM.replace("{person}", person)
     user = "Verified notes:\n\n" + "\n\n".join(lines)
-    data, raw = chat_json(system, user, usage)
+    data, raw = chat_json(system, user, usage, schema=STORY_SCHEMA)
+    if not isinstance(data.get("sentences"), list):
+        story = ("The story writer's reply could not be read, twice, so there is no story for this run. "
+                 "The verified answers are in the Answers tab; generating again usually works.")
+        log(collection_id, "story", "Write the story from the verified answers", [], f"SYSTEM:\n{system}\n\nUSER:\n{user}",
+            story, usage, True, run_id, raw_response=raw, checks={"claims": [], "error": "unreadable writer reply"})
+        return story, audit
 
+    # Each sentence takes the chunk IDs and quotes of the notes it names, so nothing is retyped.
+    sents = []
+    for x in data["sentences"]:
+        if not isinstance(x, dict):
+            continue
+        used = [notes[k - 1][1] for k in dict.fromkeys(x.get("notes") or []) if isinstance(k, int) and 1 <= k <= len(notes)]
+        sents.append({"stage": x.get("stage"), "text": x.get("text"), "notes": [k for k in x.get("notes") or [] if isinstance(k, int)],
+                      "chunk_ids": list(dict.fromkeys(i for c in used for i in c["chunk_ids"])),
+                      "quotes": list(dict.fromkeys(q for c in used for q in c["quotes"]))})
     # One paragraph per stage of life, in life order, whatever order the writer returned them in.
-    sents = [x for x in data.get("sentences", []) if isinstance(x, dict)] if isinstance(data.get("sentences"), list) else []
     stage_of = lambda x: STAGES.index(x.get("stage")) if x.get("stage") in STAGES else STAGES.index("adulthood")
     flat = sorted(((stage_of(x), x) for x in sents), key=lambda t: t[0])
     titles = {h["chunk_id"]: h.get("section", "") for r in results for h in r["hits"]}
@@ -465,7 +491,8 @@ def write_story(run_id: str, collection_id: str, person: str, results: list[dict
         if c["status"] == "kept":
             paragraphs.setdefault(p_i, []).append(f"{c['text']} [{', '.join(c['chunk_ids'])}]")
     story = "\n\n".join(" ".join(v) for _, v in sorted(paragraphs.items())) or \
-        "Every sentence the writer proposed failed verification, so there is no story to show. See the audit."
+        ("Every sentence the writer proposed failed verification, so there is no story to show. See the audit."
+         if checked else "The story writer returned no sentences, so there is no story for this run.")
 
     audit.update(sentences=checked, total=len(checked), kept=sum(c["status"] == "kept" for c in checked),
                  removed=sum(c["status"] == "removed" for c in checked))

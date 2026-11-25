@@ -28,13 +28,16 @@ def embed(texts: list[str]) -> np.ndarray:
     return arr
 
 
-def chat(system: str, user: str, json_mode: bool = False) -> tuple[str, dict]:
+def chat(system: str, user: str, json_mode: bool = False, schema: dict | None = None) -> tuple[str, dict]:
     """Returns the reply and {tokens_in, tokens_out, latency_ms} for the log."""
     kwargs = {}
     # Reasoning models (o-series, gpt-5) reject a temperature setting.
     if not CHAT_MODEL.startswith(("o", "gpt-5")):
         kwargs["temperature"] = 0
-    if json_mode:
+    if schema:
+        # Structured outputs: the reply is forced to match the schema, so it is always valid JSON.
+        kwargs["response_format"] = {"type": "json_schema", "json_schema": {"name": "reply", "strict": True, "schema": schema}}
+    elif json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     # Caps runaway output (JSON mode can stream whitespace until the limit). Far above any real reply.
     kwargs["max_completion_tokens"] = 8000
