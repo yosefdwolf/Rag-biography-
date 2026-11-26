@@ -258,6 +258,7 @@ JUDGE_SYSTEM = """You check claims about one person. Each claim comes with state
 For each claim decide whether the statements, read together, state everything the claim says about this person.
 - A statement about someone else is not evidence about the person. "Master Thomas's second wife was Rowena Hamilton" does not support "The person's second wife was Rowena Hamilton". A fact about a relative is evidence only when the statement ties that relative to the person ("the person's mother was Harriet").
 - Judge facts, not the choice of example. Questions like "the hardest thing" or "a funny story" ask for an example, and sources rarely use those words. If the only unsupported part of a claim is a label like that ("the hardest thing he went through was..."), the verdict is "partial", and "supported_part" is the same fact without the label.
+- Relationships must be stated, not inferred. A claim that someone is the person's sibling, parent, child, spouse, friend or rival needs a statement that says so. "The queen bore three sons" does not make them the person's brothers unless the statements say the person is also her child.
 - The claim itself must be about the person, or about someone in relation to the person. A true claim only about someone else ("Colonel Lloyd whipped old Barney") is "unsupported": it is not about the person.
 - Paraphrase is fine. Added details (dates, names, places, numbers, causes, feelings, judgments like "leading", "best known", "remembered") are not.
 Verdicts:
@@ -426,10 +427,11 @@ def answer(collection_id: str, person: str, question: str, kind: str, run_id=Non
 
 # ---------- 5. story ----------
 
-STORY_SYSTEM = """You write a short biographical story about {person} from numbered, verified notes. Each note is a fact with the quote that proves it.
+STORY_SYSTEM = """You write a biographical story about {person} from numbered, verified notes. Each note is a fact with the quote that proves it.
 
 Rules:
 - Use ONLY the facts in the notes. Add nothing: no dates, names, places, numbers, causes or feelings the notes don't state.
+- Use every note. Each note must be cited by at least one sentence, unless it only repeats a fact another note already gives.
 - For every sentence, list the numbers of the notes it uses. Don't copy quotes or source IDs: they are attached from the notes you list.
 - Give every sentence the stage of life it belongs to: "origins" (birth, parents, family), "childhood", "youth" (teens, early work, schooling), "adulthood" (career, marriage, main events), "later life", or "legacy" (death, how they are remembered, what they are known for). Within a stage, put sentences in the order things happened. The story is assembled stage by stage, so note order doesn't matter.
 - Write in the third person about {person}, in your own words. Never paste a quote in as a sentence: sources written by the person say "I" and "me", and the story must not.
@@ -464,6 +466,22 @@ def write_story(run_id: str, collection_id: str, person: str, results: list[dict
     system = STORY_SYSTEM.replace("{person}", person)
     user = "Verified notes:\n\n" + "\n\n".join(lines)
     data, raw = chat_json(system, user, usage, schema=STORY_SCHEMA)
+    # Writers stop early. Any note no sentence cites goes back for a second pass, so no verified
+    # fact is dropped silently.
+    if isinstance(data.get("sentences"), list):
+        cited = {k for x in data["sentences"] if isinstance(x, dict) for k in (x.get("notes") or []) if isinstance(k, int)}
+        unused = [n for n in range(1, len(notes) + 1) if n not in cited]
+        if unused:
+            user2 = (f"{user}\n\nYour story so far:\n" + "\n".join(x.get("text", "") for x in data["sentences"] if isinstance(x, dict))
+                     + f"\n\nThese notes are not in the story yet: {', '.join(map(str, unused))}. Write sentences for them only, "
+                       "citing their numbers, without repeating sentences already written.")
+            more, raw2 = chat_json(system, user2, usage, schema=STORY_SCHEMA)
+            if isinstance(more.get("sentences"), list):
+                data["sentences"] += more["sentences"]
+                raw = f"{raw}\n\nSECOND PASS (notes {', '.join(map(str, unused))}):\n{raw2}"
+                cited |= {k for x in more["sentences"] if isinstance(x, dict) for k in (x.get("notes") or []) if isinstance(k, int)}
+        audit["notes"] = len(notes)
+        audit["notes_unused"] = [n for n in range(1, len(notes) + 1) if n not in cited]
     if not isinstance(data.get("sentences"), list):
         story = ("The story writer's reply could not be read, twice, so there is no story for this run. "
                  "The verified answers are in the Answers tab; generating again usually works.")

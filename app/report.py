@@ -127,6 +127,8 @@ def build(run_id: str) -> dict | None:
         "story_sentences": len(sentences),
         "story_sentences_kept": sum(s["status"] == "kept" for s in sentences),
         "story_sentences_removed": sum(s["status"] != "kept" for s in sentences),
+        "story_notes": audit.get("notes"),
+        "story_notes_unused": audit.get("notes_unused"),
         "canary_questions": len(answered_canary),
         "canary_passed": sum(c["outcome"] == "not_in_sources" for c in answered_canary),
         "llm_calls": None,

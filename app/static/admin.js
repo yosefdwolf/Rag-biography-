@@ -133,6 +133,7 @@
       ${check('ok', 'Claims kept: quote verified in the cited chunk', s.claims_kept)}
       ${check(s.claims_removed ? 'bad' : 'ok', 'Claims removed from answers (possible training data)', s.claims_removed ? `${s.claims_removed} in ${qs(s.questions_with_removed_claims)}` : 'none')}
       ${check(s.story_sentences_removed ? 'bad' : 'ok', 'Story sentences verified / removed', `${s.story_sentences_kept} / ${s.story_sentences_removed}`)}
+      ${s.story_notes == null ? '' : check(s.story_notes_unused.length ? 'bad' : 'ok', 'Verified facts used in the story', `${s.story_notes - s.story_notes_unused.length} / ${s.story_notes}`)}
       ${check(canaryState, 'Canary questions answered “not in the sources”', s.canary_questions ? `${s.canary_passed} / ${s.canary_questions}` : 'none asked')}
       ${check('info', 'Tokens in / out', `${s.tokens_in.toLocaleString()} / ${s.tokens_out.toLocaleString()}`)}
     </div></section>`;
